@@ -202,8 +202,10 @@ ttl_mod = { ^"TTL" ~ duration_literal }
 aggregate_mod = { ^"AGGREGATE" ~ agg_func ~ ("," ~ agg_func)* }
 
 agg_func = {
-    agg_func_name ~ "(" ~ (field_path | "*") ~ ")" ~ (^"AS" ~ identifier)?
+    agg_func_name ~ "(" ~ (field_path | "*") ~ ")" ~ agg_alias?
 }
+
+agg_alias = { ^"AS" ~ identifier }
 
 agg_func_name = { ^"COUNT" | ^"AVG" | ^"SUM" | ^"MIN" | ^"MAX" }
 

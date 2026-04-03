@@ -412,3 +412,99 @@ async fn test_mcp_full_workflow() {
     let response = server.handle_request(context_request).await;
     assert!(response.result.is_some());
 }
+
+// ============================================================================
+// FOLLOW LINKS tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_follow_links() {
+    let adb = Arc::new(Adb::new());
+
+    // Store source record in PROCEDURAL
+    adb.store(
+        MemoryType::Procedural,
+        "oom-fix",
+        json!({
+            "pattern": "OOMKilled",
+            "steps": ["Check memory", "Increase limit"]
+        }),
+    ).await.unwrap();
+
+    // Store target record in EPISODIC
+    adb.store(
+        MemoryType::Episodic,
+        "inc-001",
+        json!({
+            "incident_type": "OOM",
+            "pod": "api-server"
+        }),
+    ).await.unwrap();
+
+    // Create link from procedural to episodic
+    adb.link(
+        MemoryType::Procedural,
+        "oom-fix",
+        MemoryType::Episodic,
+        "inc-001",
+        "applied_to",
+        0.95,
+    ).await.unwrap();
+
+    // Execute FOLLOW LINKS query
+    let executor = Executor::new(Arc::clone(&adb));
+    let result = executor.execute(
+        r#"RECALL FROM PROCEDURAL WHERE pattern = "OOMKilled" FOLLOW LINKS TYPE "applied_to""#
+    ).await.unwrap();
+
+    assert!(result.success);
+    let records = result.get_records().unwrap();
+    // FOLLOW LINKS should return the target records (inc-001), not the source (oom-fix)
+    assert_eq!(records.len(), 1, "Expected 1 target record from FOLLOW LINKS");
+    assert_eq!(records[0].id, "inc-001");
+    assert_eq!(records[0].data["pod"], "api-server");
+}
+
+// ============================================================================
+// HAVING with alias tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_having_with_alias() {
+    let adb = Arc::new(Adb::new());
+
+    // Store some records
+    adb.store(
+        MemoryType::Episodic,
+        "e1",
+        json!({"strategy": "tech_news", "ctr": 0.05}),
+    ).await.unwrap();
+    adb.store(
+        MemoryType::Episodic,
+        "e2",
+        json!({"strategy": "tech_news", "ctr": 0.03}),
+    ).await.unwrap();
+    adb.store(
+        MemoryType::Episodic,
+        "e3",
+        json!({"strategy": "sports", "ctr": 0.08}),
+    ).await.unwrap();
+
+    let executor = Executor::new(Arc::clone(&adb));
+
+    // Test HAVING with alias - should return the count
+    let result = executor.execute(
+        r#"RECALL FROM EPISODIC WHERE strategy = "tech_news" AGGREGATE COUNT(*) AS total HAVING total > 0"#
+    ).await.unwrap();
+
+    assert!(result.success, "Query should succeed");
+    // Should have the aggregate result with the aliased key
+    if let adb_executor::ResultSet::Aggregation { values } = &result.data {
+        assert!(values.is_object(), "Result should be an object");
+        let obj = values.as_object().unwrap();
+        assert!(obj.contains_key("total"), "Result should have 'total' key");
+        assert_eq!(obj["total"], 2, "Count should be 2");
+    } else {
+        panic!("Expected Aggregation result");
+    }
+}

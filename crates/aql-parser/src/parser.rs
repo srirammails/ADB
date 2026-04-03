@@ -545,14 +545,25 @@ fn parse_aggregate_func(pair: pest::iterators::Pair<Rule>) -> ParseResult<Aggreg
     let func = AggregateFuncType::from_str(func_name.as_str())
         .ok_or_else(|| ParseError::InvalidAggregateFunc(func_name.as_str().to_string()))?;
 
-    let field_or_star = inner.next().ok_or(ParseError::Missing("field"))?;
-    let field = if field_or_star.as_str() == "*" {
-        None
-    } else {
-        Some(field_or_star.as_str().to_string())
-    };
+    // The next element could be field_path (for fields) or agg_alias (when using *)
+    // because * is a literal that doesn't appear in the parse tree
+    let mut field = None;
+    let mut alias = None;
 
-    let alias = inner.next().map(|p| p.as_str().to_string());
+    for p in inner {
+        match p.as_rule() {
+            Rule::field_path => {
+                field = Some(p.as_str().to_string());
+            }
+            Rule::agg_alias => {
+                // agg_alias contains the identifier after AS
+                alias = p.into_inner()
+                    .find(|inner_p| inner_p.as_rule() == Rule::identifier)
+                    .map(|inner_p| inner_p.as_str().to_string());
+            }
+            _ => {}
+        }
+    }
 
     Ok(AggregateFunc { func, field, alias })
 }
@@ -879,6 +890,9 @@ mod tests {
             assert!(r.modifiers.aggregate.is_some());
             let aggs = r.modifiers.aggregate.unwrap();
             assert_eq!(aggs.len(), 2);
+            // Verify alias is parsed correctly
+            assert_eq!(aggs[0].alias, Some("uses".to_string()), "COUNT alias should be 'uses'");
+            assert_eq!(aggs[1].alias, Some("avg_ctr".to_string()), "AVG alias should be 'avg_ctr'");
             assert!(r.modifiers.having.is_some());
         } else {
             panic!("Expected Recall statement");
