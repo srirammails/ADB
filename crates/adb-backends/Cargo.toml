@@ -1,0 +1,27 @@
+[package]
+name = "adb-backends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ADB backend implementations for all memory types"
+
+[dependencies]
+adb-core = { path = "../adb-core" }
+tokio.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+dashmap.workspace = true
+petgraph.workspace = true
+parking_lot.workspace = true
+usearch.workspace = true
+arrow.workspace = true
+datafusion.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

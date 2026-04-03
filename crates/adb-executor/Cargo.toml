@@ -1,0 +1,23 @@
+[package]
+name = "adb-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ADB query executor"
+
+[dependencies]
+adb-core = { path = "../adb-core" }
+adb-backends = { path = "../adb-backends" }
+aql-planner = { path = "../aql-planner" }
+aql-parser = { path = "../aql-parser" }
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+adb-mcp = { path = "../adb-mcp" }

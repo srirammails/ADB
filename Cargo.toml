@@ -1,0 +1,87 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/adb-core",
+    "crates/aql-parser",
+    "crates/aql-planner",
+    "crates/adb-backends",
+    "crates/adb-executor",
+    "crates/adb-server",
+    "crates/adb-mcp",
+    "adb-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["ADB Contributors"]
+repository = "https://github.com/adb/adb"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.36", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time
+chrono = { version = "=0.4.38", features = ["serde"] }
+
+# Concurrent data structures
+dashmap = "5.5"
+parking_lot = "0.12"
+
+# Graph
+petgraph = "0.6"
+
+# Vector search
+usearch = "2.8"
+
+# Arrow/DataFusion (analytics)
+arrow = { version = "51", features = ["prettyprint"] }
+datafusion = "37"
+parquet = "51"
+
+# Parsing
+pest = "2.7"
+pest_derive = "2.7"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# UUID
+uuid = { version = "1.7", features = ["v4", "serde"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Testing
+criterion = "0.5"
+proptest = "1.4"
+
+# Internal crates
+adb-core = { path = "crates/adb-core" }
+aql-parser = { path = "crates/aql-parser" }
+aql-planner = { path = "crates/aql-planner" }
+adb-backends = { path = "crates/adb-backends" }
+adb-executor = { path = "crates/adb-executor" }
+adb-server = { path = "crates/adb-server" }
+adb-mcp = { path = "crates/adb-mcp" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[profile.bench]
+lto = true

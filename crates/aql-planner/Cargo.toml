@@ -1,0 +1,16 @@
+[package]
+name = "aql-planner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AQL query planner - routes queries to backends"
+
+[dependencies]
+adb-core = { path = "../adb-core" }
+aql-parser = { path = "../aql-parser" }
+thiserror.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]

@@ -1,0 +1,22 @@
+[package]
+name = "adb-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ADB command-line interface"
+
+[[bin]]
+name = "adb"
+path = "src/main.rs"
+
+[dependencies]
+adb-core = { path = "../crates/adb-core" }
+adb-backends = { path = "../crates/adb-backends" }
+adb-server = { path = "../crates/adb-server" }
+adb-executor = { path = "../crates/adb-executor" }
+adb-mcp = { path = "../crates/adb-mcp" }
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true

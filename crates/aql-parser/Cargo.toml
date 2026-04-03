@@ -1,0 +1,16 @@
+[package]
+name = "aql-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AQL parser - Agent Query Language parser"
+
+[dependencies]
+adb-core = { path = "../adb-core" }
+pest.workspace = true
+pest_derive.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
