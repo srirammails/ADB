@@ -331,10 +331,22 @@ impl Executor {
     async fn execute_recall(&self, step: &StepPlan) -> ExecutorResult<QueryResult> {
         let start = Instant::now();
 
-        let records = self
-            .adb
-            .recall_with_modifiers(step.memory_type, &step.predicate, &step.modifiers)
-            .await?;
+        // For aggregation, we need records WITHOUT field projection applied
+        // So we recall with predicate and filters, but apply RETURN later
+        let has_aggregate = step.modifiers.aggregate.is_some();
+
+        let records = if has_aggregate {
+            // Create modifiers without return_fields to preserve all fields for aggregation
+            let mut mods_for_recall = step.modifiers.clone();
+            mods_for_recall.return_fields = None;
+            self.adb
+                .recall_with_modifiers(step.memory_type, &step.predicate, &mods_for_recall)
+                .await?
+        } else {
+            self.adb
+                .recall_with_modifiers(step.memory_type, &step.predicate, &step.modifiers)
+                .await?
+        };
 
         // Handle aggregation if present - works for all memory types
         if let Some(agg_funcs) = &step.modifiers.aggregate {
@@ -347,10 +359,12 @@ impl Executor {
                     cond.matches(&agg_result)
                 });
 
-                // If HAVING fails, return empty aggregation
+                // If HAVING fails, return the aggregation with a flag or empty
+                // Based on SQL semantics, HAVING filters groups - if condition fails,
+                // the entire group is excluded, returning no data
                 if !matches_having {
                     return Ok(QueryResult::aggregation(
-                        serde_json::json!({}),
+                        serde_json::json!(null),
                         start.elapsed().as_millis() as u64,
                     ));
                 }
@@ -358,6 +372,61 @@ impl Executor {
 
             return Ok(QueryResult::aggregation(
                 agg_result,
+                start.elapsed().as_millis() as u64,
+            ));
+        }
+
+        // Handle FOLLOW LINKS - traverse links and return target records
+        if let Some(follow_links) = &step.modifiers.follow_links {
+            let mut target_records = Vec::new();
+
+            for record in &records {
+                // Get links from this record
+                let links = self
+                    .adb
+                    .get_links_from(
+                        record.memory_type,
+                        &record.id,
+                        Some(&follow_links.link_type),
+                    )
+                    .await?;
+
+                // Fetch target records for each link
+                for link in links {
+                    let targets = self
+                        .adb
+                        .lookup(link.to_type, &adb_core::Predicate::Key {
+                            field: "id".to_string(),
+                            value: adb_core::Value::String(link.to_id.clone()),
+                        })
+                        .await?;
+
+                    target_records.extend(targets);
+                }
+            }
+
+            // Apply field projection if RETURN clause specified
+            let final_records = if let Some(ref return_fields) = step.modifiers.return_fields {
+                target_records
+                    .into_iter()
+                    .map(|mut r| {
+                        if let Some(obj) = r.data.as_object() {
+                            let projected: serde_json::Map<String, serde_json::Value> = obj
+                                .iter()
+                                .filter(|(k, _)| return_fields.contains(k))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                            r.data = serde_json::Value::Object(projected);
+                        }
+                        r
+                    })
+                    .collect()
+            } else {
+                target_records
+            };
+
+            return Ok(QueryResult::records(
+                final_records,
                 start.elapsed().as_millis() as u64,
             ));
         }

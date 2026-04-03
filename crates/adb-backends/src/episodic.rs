@@ -133,10 +133,6 @@ impl EpisodicBackend {
         records: Vec<MemoryRecord>,
         agg_funcs: &[adb_core::AggregateFunc],
     ) -> AdbResult<serde_json::Value> {
-        if records.is_empty() {
-            return Ok(serde_json::json!({}));
-        }
-
         // Build aggregation results manually for simplicity
         let mut results = serde_json::Map::new();
 
@@ -152,14 +148,23 @@ impl EpisodicBackend {
                 }
                 adb_core::AggregateFuncType::Sum => {
                     if let Some(ref field) = agg.field {
-                        let sum: f64 = records
+                        let values: Vec<f64> = records
                             .iter()
-                            .filter_map(|r| r.data.get(field))
+                            .filter_map(|r| extract_field_value(r, field))
                             .filter_map(|v| json_to_f64(v))
-                            .sum();
-                        serde_json::Number::from_f64(sum)
-                            .map(serde_json::Value::Number)
-                            .unwrap_or(serde_json::Value::Null)
+                            .collect();
+
+                        if values.is_empty() {
+                            // No values found - return 0 for SUM (SQL semantics)
+                            serde_json::Value::Number(serde_json::Number::from(0))
+                        } else {
+                            let sum: f64 = values.iter().sum();
+                            // Normalize -0.0 to 0.0
+                            let sum = if sum == 0.0 { 0.0 } else { sum };
+                            serde_json::Number::from_f64(sum)
+                                .map(serde_json::Value::Number)
+                                .unwrap_or(serde_json::Value::Number(serde_json::Number::from(0)))
+                        }
                     } else {
                         serde_json::Value::Null
                     }
@@ -168,9 +173,10 @@ impl EpisodicBackend {
                     if let Some(ref field) = agg.field {
                         let values: Vec<f64> = records
                             .iter()
-                            .filter_map(|r| r.data.get(field))
+                            .filter_map(|r| extract_field_value(r, field))
                             .filter_map(|v| json_to_f64(v))
                             .collect();
+
                         if values.is_empty() {
                             serde_json::Value::Null
                         } else {
@@ -185,14 +191,16 @@ impl EpisodicBackend {
                 }
                 adb_core::AggregateFuncType::Min => {
                     if let Some(ref field) = agg.field {
-                        let min = records
+                        let values: Vec<f64> = records
                             .iter()
-                            .filter_map(|r| r.data.get(field))
+                            .filter_map(|r| extract_field_value(r, field))
                             .filter_map(|v| json_to_f64(v))
-                            .fold(f64::INFINITY, f64::min);
-                        if min.is_infinite() {
+                            .collect();
+
+                        if values.is_empty() {
                             serde_json::Value::Null
                         } else {
+                            let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
                             serde_json::Number::from_f64(min)
                                 .map(serde_json::Value::Number)
                                 .unwrap_or(serde_json::Value::Null)
@@ -203,14 +211,16 @@ impl EpisodicBackend {
                 }
                 adb_core::AggregateFuncType::Max => {
                     if let Some(ref field) = agg.field {
-                        let max = records
+                        let values: Vec<f64> = records
                             .iter()
-                            .filter_map(|r| r.data.get(field))
+                            .filter_map(|r| extract_field_value(r, field))
                             .filter_map(|v| json_to_f64(v))
-                            .fold(f64::NEG_INFINITY, f64::max);
-                        if max.is_infinite() {
+                            .collect();
+
+                        if values.is_empty() {
                             serde_json::Value::Null
                         } else {
+                            let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                             serde_json::Number::from_f64(max)
                                 .map(serde_json::Value::Number)
                                 .unwrap_or(serde_json::Value::Null)
@@ -233,7 +243,17 @@ impl EpisodicBackend {
         mut results: Vec<MemoryRecord>,
         modifiers: &Modifiers,
     ) -> Vec<MemoryRecord> {
-        // Apply window first if present
+        // Apply SCOPE filter first
+        if let Some(ref scope) = modifiers.scope {
+            results.retain(|r| &r.metadata.scope == scope);
+        }
+
+        // Apply NAMESPACE filter
+        if let Some(ref namespace) = modifiers.namespace {
+            results.retain(|r| r.metadata.namespace.as_ref() == Some(namespace));
+        }
+
+        // Apply window if present
         if let Some(ref window) = modifiers.window {
             results = self.filter_by_window(&results, window);
         }
@@ -582,6 +602,23 @@ fn json_to_f64(value: &serde_json::Value) -> Option<f64> {
         serde_json::Value::String(s) => s.parse::<f64>().ok(),
         _ => None,
     }
+}
+
+/// Extract a field value from a MemoryRecord, checking both data and top-level fields
+fn extract_field_value<'a>(record: &'a MemoryRecord, field: &str) -> Option<&'a serde_json::Value> {
+    // First try to get from record.data directly
+    if let Some(value) = record.data.get(field) {
+        return Some(value);
+    }
+
+    // If data is an object, also check if the field exists
+    if let Some(obj) = record.data.as_object() {
+        if let Some(value) = obj.get(field) {
+            return Some(value);
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]

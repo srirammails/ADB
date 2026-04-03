@@ -416,9 +416,25 @@ fn convert_modifiers(mods: &Modifiers) -> PlanResult<CoreModifiers> {
             conds.iter().filter_map(|c| convert_condition(c).ok()).collect()
         }),
         window: mods.window.as_ref().and_then(|w| convert_window(w).ok()),
-        with_links: None, // Handled separately in reflect
-        follow_links: None,
+        with_links: mods.with_links.as_ref().map(convert_with_links),
+        follow_links: mods.follow_links.as_ref().map(convert_follow_links),
     })
+}
+
+fn convert_with_links(wl: &aql_parser::ast::WithLinks) -> adb_core::WithLinks {
+    match wl {
+        aql_parser::ast::WithLinks::All => adb_core::WithLinks::All,
+        aql_parser::ast::WithLinks::Type { link_type } => adb_core::WithLinks::Type {
+            link_type: link_type.clone(),
+        },
+    }
+}
+
+fn convert_follow_links(fl: &aql_parser::ast::FollowLinks) -> adb_core::FollowLinks {
+    adb_core::FollowLinks {
+        link_type: fl.link_type.clone(),
+        depth: fl.depth,
+    }
 }
 
 fn convert_scope(scope: Scope) -> CoreScope {

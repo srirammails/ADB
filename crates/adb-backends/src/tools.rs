@@ -267,6 +267,16 @@ impl Backend for ToolsBackend {
             .map(|t| t.to_memory_record(self.default_scope))
             .collect();
 
+        // Apply SCOPE filter
+        if let Some(ref scope) = modifiers.scope {
+            results.retain(|r| &r.metadata.scope == scope);
+        }
+
+        // Apply NAMESPACE filter
+        if let Some(ref namespace) = modifiers.namespace {
+            results.retain(|r| r.metadata.namespace.as_ref() == Some(namespace));
+        }
+
         // Apply limit
         if let Some(limit) = modifiers.limit {
             results.truncate(limit);

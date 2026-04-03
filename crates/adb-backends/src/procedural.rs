@@ -42,6 +42,8 @@ pub struct ProcedureNode {
     pub variables: HashMap<String, f64>,
     /// Additional metadata
     pub metadata: serde_json::Value,
+    /// Version number (incremented on update)
+    pub version: u64,
 }
 
 impl ProcedureNode {
@@ -62,16 +64,19 @@ impl ProcedureNode {
             failure_count: 0,
             variables: HashMap::new(),
             metadata: serde_json::Value::Null,
+            version: 1,
         }
     }
 
     /// Convert to MemoryRecord
     pub fn to_memory_record(&self, scope: Scope) -> MemoryRecord {
+        let mut metadata = Metadata::new(scope);
+        metadata.version = self.version;
         MemoryRecord {
             id: self.pattern_id.clone(),
             memory_type: MemoryType::Procedural,
             data: serde_json::to_value(self).unwrap_or_default(),
-            metadata: Metadata::new(scope),
+            metadata,
         }
     }
 
@@ -410,6 +415,16 @@ impl Backend for ProceduralBackend {
             .map(|proc| proc.to_memory_record(self.default_scope))
             .collect();
 
+        // Apply SCOPE filter
+        if let Some(ref scope) = modifiers.scope {
+            results.retain(|r| &r.metadata.scope == scope);
+        }
+
+        // Apply NAMESPACE filter
+        if let Some(ref namespace) = modifiers.namespace {
+            results.retain(|r| r.metadata.namespace.as_ref() == Some(namespace));
+        }
+
         // Apply limit
         if let Some(limit) = modifiers.limit {
             results.truncate(limit);
@@ -539,6 +554,9 @@ impl Backend for ProceduralBackend {
                 if let Some(meta) = data.get("metadata") {
                     proc.metadata = meta.clone();
                 }
+
+                // Increment version on update
+                proc.version += 1;
 
                 count += 1;
             }

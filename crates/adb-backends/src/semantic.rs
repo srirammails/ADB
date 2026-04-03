@@ -185,6 +185,16 @@ impl SemanticBackend {
 
     /// Apply modifiers to search results
     fn apply_modifiers(&self, mut results: Vec<MemoryRecord>, modifiers: &Modifiers) -> Vec<MemoryRecord> {
+        // Apply SCOPE filter first
+        if let Some(ref scope) = modifiers.scope {
+            results.retain(|r| &r.metadata.scope == scope);
+        }
+
+        // Apply NAMESPACE filter
+        if let Some(ref namespace) = modifiers.namespace {
+            results.retain(|r| r.metadata.namespace.as_ref() == Some(namespace));
+        }
+
         // Apply ORDER BY
         if let Some(ref order_by) = modifiers.order_by {
             results.sort_by(|a, b| {
