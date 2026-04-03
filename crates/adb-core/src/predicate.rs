@@ -220,6 +220,8 @@ pub enum Value {
     Float(f64),
     String(String),
     Array(Vec<Value>),
+    /// Variable reference (for pipeline inter-stage binding)
+    Variable(String),
 }
 
 impl Value {
@@ -238,6 +240,20 @@ impl Value {
             Self::Array(arr) => {
                 serde_json::Value::Array(arr.iter().map(|v| v.to_json()).collect())
             }
+            Self::Variable(v) => serde_json::Value::String(format!("${{{}}}", v)),
+        }
+    }
+
+    /// Check if this value is a variable reference
+    pub fn is_variable(&self) -> bool {
+        matches!(self, Self::Variable(_))
+    }
+
+    /// Get variable name if this is a variable
+    pub fn as_variable(&self) -> Option<&str> {
+        match self {
+            Self::Variable(v) => Some(v.as_str()),
+            _ => None,
         }
     }
 }
@@ -286,6 +302,8 @@ fn value_equals(json: &serde_json::Value, value: &Value) -> bool {
         (serde_json::Value::Number(n), Value::Int(i)) => n.as_i64() == Some(*i),
         (serde_json::Value::Number(n), Value::Float(f)) => n.as_f64() == Some(*f),
         (serde_json::Value::String(a), Value::String(b)) => a == b,
+        // Variables should be bound before comparison - if we reach here, no match
+        (_, Value::Variable(_)) => false,
         _ => false,
     }
 }

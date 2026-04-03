@@ -16,8 +16,8 @@ use aql_parser::ast::{
 
 use crate::error::{PlanError, PlanResult};
 use crate::plan::{
-    ExecutionPlan, FanOutPlan, LinkData, LinkOptions, Operation, PipelinePlan, ReflectPlan,
-    ReflectSourcePlan, StepPlan, StoreData,
+    ExecutionPlan, FanOutPlan, LinkData, LinkOptions, Operation, PipelinePlan, PipelineStage,
+    ReflectPlan, ReflectSourcePlan, StepPlan, StoreData,
 };
 
 /// The query planner
@@ -67,17 +67,14 @@ impl Planner {
             return Err(PlanError::EmptyPipeline);
         }
 
-        let mut steps = Vec::new();
+        let mut stages = Vec::new();
         for stage in &stmt.stages {
             match self.plan(stage)? {
-                ExecutionPlan::Single(step) => steps.push(step),
-                ExecutionPlan::Pipeline(p) => steps.extend(p.steps),
-                ExecutionPlan::Reflect(_) => {
-                    // Flatten reflect into steps - simplified for now
-                    return Err(PlanError::UnsupportedOperation {
-                        op: "REFLECT in PIPELINE".to_string(),
-                        memory_type: "N/A".to_string(),
-                    });
+                ExecutionPlan::Single(step) => stages.push(PipelineStage::Step(step)),
+                ExecutionPlan::Pipeline(p) => stages.extend(p.stages),
+                ExecutionPlan::Reflect(r) => {
+                    // Support REFLECT as a pipeline stage
+                    stages.push(PipelineStage::Reflect(r));
                 }
                 ExecutionPlan::FanOut(_) => {
                     // FanOut in pipeline requires special handling
@@ -92,7 +89,7 @@ impl Planner {
         Ok(ExecutionPlan::Pipeline(PipelinePlan {
             name: stmt.name.clone(),
             timeout: stmt.timeout,
-            steps,
+            stages,
         }))
     }
 
@@ -388,7 +385,8 @@ fn convert_value(val: &Value) -> PlanResult<CoreValue> {
         Value::Int(i) => Ok(CoreValue::Int(*i)),
         Value::Float(f) => Ok(CoreValue::Float(*f)),
         Value::String(s) => Ok(CoreValue::String(s.clone())),
-        Value::Variable(v) => Err(PlanError::UnboundVariable(v.clone())),
+        // Pass variables through - they'll be bound at execution time in pipelines
+        Value::Variable(v) => Ok(CoreValue::Variable(v.clone())),
         Value::Array(arr) => {
             let converted: PlanResult<Vec<_>> = arr.iter().map(convert_value).collect();
             Ok(CoreValue::Array(converted?))
@@ -607,7 +605,7 @@ mod tests {
         match plan {
             ExecutionPlan::Pipeline(p) => {
                 assert_eq!(p.name, "error_handler");
-                assert_eq!(p.steps.len(), 2);
+                assert_eq!(p.stages.len(), 2);
             }
             _ => panic!("Expected pipeline plan"),
         }

@@ -143,7 +143,7 @@ all_pred = { ^"ALL" }
 
 condition_list = { condition ~ (^"AND" ~ condition)* }
 
-condition = { identifier ~ operator ~ value }
+condition = { field_path ~ operator ~ value }
 
 operator = {
     ">=" | "<=" | "!=" | "<>" | "=" | ">" | "<"
@@ -156,7 +156,7 @@ operator = {
 
 payload = { "(" ~ field_assignment ~ ("," ~ field_assignment)* ~ ")" }
 
-field_assignment = { identifier ~ "=" ~ value }
+field_assignment = { field_path ~ "=" ~ value }
 
 // ============================================================================
 // Modifiers
@@ -180,11 +180,11 @@ modifier = {
 
 limit_mod = { ^"LIMIT" ~ integer_literal }
 
-order_mod = { ^"ORDER" ~ ^"BY" ~ identifier ~ order_direction? }
+order_mod = { ^"ORDER" ~ ^"BY" ~ field_path ~ order_direction? }
 
 order_direction = { ^"ASC" | ^"DESC" }
 
-return_mod = { ^"RETURN" ~ identifier ~ ("," ~ identifier)* }
+return_mod = { ^"RETURN" ~ field_path ~ ("," ~ field_path)* }
 
 timeout_mod = { ^"TIMEOUT" ~ duration_literal }
 
@@ -202,7 +202,7 @@ ttl_mod = { ^"TTL" ~ duration_literal }
 aggregate_mod = { ^"AGGREGATE" ~ agg_func ~ ("," ~ agg_func)* }
 
 agg_func = {
-    agg_func_name ~ "(" ~ (identifier | "*") ~ ")" ~ (^"AS" ~ identifier)?
+    agg_func_name ~ "(" ~ (field_path | "*") ~ ")" ~ (^"AS" ~ identifier)?
 }
 
 agg_func_name = { ^"COUNT" | ^"AVG" | ^"SUM" | ^"MIN" | ^"MAX" }
@@ -220,7 +220,7 @@ follow_links_mod = { ^"FOLLOW" ~ ^"LINKS" ~ ^"TYPE" ~ string_literal ~ (^"DEPTH"
 window_mod = {
     ^"WINDOW" ~ (
         (^"LAST" ~ (duration_literal | integer_literal))
-      | (^"TOP" ~ integer_literal ~ ^"BY" ~ identifier)
+      | (^"TOP" ~ integer_literal ~ ^"BY" ~ field_path)
       | (^"SINCE" ~ condition)
     )
 }
@@ -265,10 +265,14 @@ duration_literal = @{ ASCII_DIGIT+ ~ duration_unit }
 duration_unit = { "ms" | "s" | "m" | "h" | "d" }
 
 // ============================================================================
-// Identifiers
+// Identifiers and Field Paths
 // ============================================================================
 
+// Simple identifier (no dots)
 identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+
+// Dotted field path for accessing nested fields (e.g., metadata.pod)
+field_path = @{ identifier ~ ("." ~ identifier)* }
 
 // ============================================================================
 // Whitespace and Comments

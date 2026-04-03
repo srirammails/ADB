@@ -8,7 +8,7 @@ mod planner;
 
 pub use error::{PlanError, PlanResult};
 pub use plan::{
-    ExecutionPlan, FanOutPlan, LinkData, LinkOptions, Operation, PipelinePlan, ReflectPlan,
-    ReflectSourcePlan, StepPlan, StoreData,
+    ExecutionPlan, FanOutPlan, LinkData, LinkOptions, Operation, PipelinePlan, PipelineStage,
+    ReflectPlan, ReflectSourcePlan, StepPlan, StoreData,
 };
 pub use planner::Planner;

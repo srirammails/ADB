@@ -26,8 +26,17 @@ pub struct PipelinePlan {
     pub name: String,
     /// Optional timeout for entire pipeline
     pub timeout: Option<Duration>,
-    /// Ordered steps to execute
-    pub steps: Vec<StepPlan>,
+    /// Ordered stages to execute (can be steps or reflects)
+    pub stages: Vec<PipelineStage>,
+}
+
+/// A stage in a pipeline - can be a single step or a reflect
+#[derive(Debug, Clone)]
+pub enum PipelineStage {
+    /// Single operation step
+    Step(StepPlan),
+    /// Reflect (multi-source query)
+    Reflect(ReflectPlan),
 }
 
 /// A single step in an execution plan

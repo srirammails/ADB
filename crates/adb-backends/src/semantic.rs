@@ -463,6 +463,7 @@ fn value_to_string(value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_string(),
         Value::Array(arr) => format!("{:?}", arr),
+        Value::Variable(v) => format!("${{{}}}", v),
     }
 }
 

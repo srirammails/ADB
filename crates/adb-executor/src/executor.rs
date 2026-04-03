@@ -5,10 +5,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use std::collections::HashMap;
+
 use adb_backends::Adb;
-use adb_core::{MemoryType, Scope};
+use adb_core::{Condition, MemoryType, Predicate, Scope, Value};
 use aql_parser::parse;
-use aql_planner::{ExecutionPlan, FanOutPlan, Operation, PipelinePlan, Planner, ReflectPlan, StepPlan};
+use aql_planner::{ExecutionPlan, FanOutPlan, Operation, PipelinePlan, PipelineStage, Planner, ReflectPlan, StepPlan};
 
 use crate::error::{ExecutorError, ExecutorResult};
 use crate::result::{QueryResult, ResultSet, SourceResult};
@@ -90,10 +92,29 @@ impl Executor {
     async fn execute_pipeline(&self, pipeline: &PipelinePlan) -> ExecutorResult<QueryResult> {
         let start = Instant::now();
         let mut step_results = Vec::new();
+        let mut var_bindings: HashMap<String, Value> = HashMap::new();
 
-        for (i, step) in pipeline.steps.iter().enumerate() {
-            match self.execute_step(step).await {
-                Ok(result) => step_results.push(result),
+        for (i, stage) in pipeline.stages.iter().enumerate() {
+            // Bind variables in the stage's predicate from previous results
+            let bound_stage = match stage {
+                PipelineStage::Step(step) => {
+                    let bound_step = self.bind_variables_in_step(step, &var_bindings);
+                    PipelineStage::Step(bound_step)
+                }
+                PipelineStage::Reflect(reflect) => PipelineStage::Reflect(reflect.clone()),
+            };
+
+            let result = match &bound_stage {
+                PipelineStage::Step(step) => self.execute_step(step).await,
+                PipelineStage::Reflect(reflect) => self.execute_reflect(reflect).await,
+            };
+
+            match result {
+                Ok(r) => {
+                    // Extract variable bindings from this stage's results
+                    self.extract_bindings(&r, &mut var_bindings);
+                    step_results.push(r);
+                }
                 Err(e) => {
                     return Err(ExecutorError::PipelineError {
                         step: i,
@@ -107,6 +128,81 @@ impl Executor {
             step_results,
             start.elapsed().as_millis() as u64,
         ))
+    }
+
+    /// Bind variables in a step's predicate from bindings
+    fn bind_variables_in_step(&self, step: &StepPlan, bindings: &HashMap<String, Value>) -> StepPlan {
+        let mut bound_step = step.clone();
+        bound_step.predicate = self.bind_variables_in_predicate(&step.predicate, bindings);
+        bound_step
+    }
+
+    /// Bind variables in a predicate
+    fn bind_variables_in_predicate(&self, predicate: &Predicate, bindings: &HashMap<String, Value>) -> Predicate {
+        match predicate {
+            Predicate::Where { conditions } => {
+                let bound_conditions: Vec<Condition> = conditions
+                    .iter()
+                    .map(|c| self.bind_variables_in_condition(c, bindings))
+                    .collect();
+                Predicate::Where { conditions: bound_conditions }
+            }
+            Predicate::Key { field, value } => Predicate::Key {
+                field: field.clone(),
+                value: self.bind_value(value, bindings),
+            },
+            _ => predicate.clone(),
+        }
+    }
+
+    /// Bind variables in a condition
+    fn bind_variables_in_condition(&self, condition: &Condition, bindings: &HashMap<String, Value>) -> Condition {
+        Condition {
+            field: condition.field.clone(),
+            operator: condition.operator,
+            value: self.bind_value(&condition.value, bindings),
+        }
+    }
+
+    /// Bind a value if it's a variable
+    fn bind_value(&self, value: &Value, bindings: &HashMap<String, Value>) -> Value {
+        match value {
+            Value::Variable(var_name) => {
+                bindings.get(var_name).cloned().unwrap_or_else(|| value.clone())
+            }
+            _ => value.clone(),
+        }
+    }
+
+    /// Extract variable bindings from query results
+    fn extract_bindings(&self, result: &QueryResult, bindings: &mut HashMap<String, Value>) {
+        match &result.data {
+            ResultSet::Records { records } => {
+                // Extract from the first record (for pipeline use)
+                if let Some(record) = records.first() {
+                    if let Some(obj) = record.data.as_object() {
+                        for (key, val) in obj {
+                            let value: Value = json_to_value(val);
+                            bindings.insert(key.clone(), value);
+                        }
+                    }
+                }
+            }
+            ResultSet::Reflect { sources, .. } => {
+                // Extract from first source's first record
+                if let Some(source) = sources.first() {
+                    if let Some(record) = source.records.first() {
+                        if let Some(obj) = record.data.as_object() {
+                            for (key, val) in obj {
+                                let value: Value = json_to_value(val);
+                                bindings.insert(key.clone(), value);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Execute a fan-out query across ALL memory types
@@ -431,6 +527,47 @@ impl Executor {
             ));
         }
 
+        // Handle WITH LINKS - add links array to each record
+        if let Some(with_links) = &step.modifiers.with_links {
+            let mut records_with_links = Vec::new();
+
+            for mut record in records {
+                // Get links for this record
+                let link_type_filter = match with_links {
+                    adb_core::WithLinks::All => None,
+                    adb_core::WithLinks::Type { link_type } => Some(link_type.as_str()),
+                };
+
+                let links = self
+                    .adb
+                    .get_links_from(record.memory_type, &record.id, link_type_filter)
+                    .await?;
+
+                // Add links array to record data
+                if let Some(obj) = record.data.as_object_mut() {
+                    let links_json: Vec<serde_json::Value> = links
+                        .iter()
+                        .map(|l| {
+                            serde_json::json!({
+                                "link_type": l.link_type,
+                                "to_type": format!("{:?}", l.to_type),
+                                "to_id": l.to_id,
+                                "weight": l.weight
+                            })
+                        })
+                        .collect();
+                    obj.insert("links".to_string(), serde_json::Value::Array(links_json));
+                }
+
+                records_with_links.push(record);
+            }
+
+            return Ok(QueryResult::records(
+                records_with_links,
+                start.elapsed().as_millis() as u64,
+            ));
+        }
+
         Ok(QueryResult::records(
             records,
             start.elapsed().as_millis() as u64,
@@ -444,6 +581,45 @@ impl Executor {
             .adb
             .lookup_with_modifiers(step.memory_type, &step.predicate, &step.modifiers)
             .await?;
+
+        // Handle WITH LINKS - add links array to each record
+        if let Some(with_links) = &step.modifiers.with_links {
+            let mut records_with_links = Vec::new();
+
+            for mut record in records {
+                let link_type_filter = match with_links {
+                    adb_core::WithLinks::All => None,
+                    adb_core::WithLinks::Type { link_type } => Some(link_type.as_str()),
+                };
+
+                let links = self
+                    .adb
+                    .get_links_from(record.memory_type, &record.id, link_type_filter)
+                    .await?;
+
+                if let Some(obj) = record.data.as_object_mut() {
+                    let links_json: Vec<serde_json::Value> = links
+                        .iter()
+                        .map(|l| {
+                            serde_json::json!({
+                                "link_type": l.link_type,
+                                "to_type": format!("{:?}", l.to_type),
+                                "to_id": l.to_id,
+                                "weight": l.weight
+                            })
+                        })
+                        .collect();
+                    obj.insert("links".to_string(), serde_json::Value::Array(links_json));
+                }
+
+                records_with_links.push(record);
+            }
+
+            return Ok(QueryResult::records(
+                records_with_links,
+                start.elapsed().as_millis() as u64,
+            ));
+        }
 
         Ok(QueryResult::records(
             records,
@@ -540,6 +716,31 @@ impl Executor {
         // TODO: Implement link creation
         // This requires extracting LinkData from step.data and calling adb.link()
         Ok(QueryResult::empty(0))
+    }
+}
+
+/// Convert a JSON value to a Value type
+fn json_to_value(json: &serde_json::Value) -> Value {
+    match json {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(f)
+            } else {
+                Value::Null
+            }
+        }
+        serde_json::Value::String(s) => Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            Value::Array(arr.iter().map(json_to_value).collect())
+        }
+        serde_json::Value::Object(_) => {
+            // Convert object to string representation
+            Value::String(json.to_string())
+        }
     }
 }
 

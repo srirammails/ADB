@@ -116,7 +116,13 @@ fn parse_reflect(pair: pest::iterators::Pair<Rule>) -> ParseResult<Statement> {
             }
             Rule::then_clause => {
                 let inner = item.into_inner().next().ok_or(ParseError::Empty)?;
-                then_clause = Some(Box::new(parse_statement_inner(inner)?));
+                // then_clause contains store_stmt or update_stmt directly
+                let stmt = match inner.as_rule() {
+                    Rule::store_stmt => parse_store(inner)?,
+                    Rule::update_stmt => parse_update(inner)?,
+                    _ => return Err(ParseError::UnexpectedRule(format!("{:?}", inner.as_rule()))),
+                };
+                then_clause = Some(Box::new(stmt));
             }
             _ => {}
         }
@@ -897,6 +903,33 @@ mod tests {
         if let Statement::Recall(r) = stmt {
             assert_eq!(r.modifiers.min_confidence, Some(0.8));
             assert_eq!(r.modifiers.limit, Some(5));
+        } else {
+            panic!("Expected Recall statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_dotted_field_path() {
+        // Test dotted field path in condition
+        let stmt = parse("RECALL FROM EPISODIC WHERE metadata.pod = \"payments\"").unwrap();
+        if let Statement::Recall(r) = stmt {
+            if let Predicate::Where { conditions } = r.predicate {
+                assert_eq!(conditions[0].field, "metadata.pod");
+            } else {
+                panic!("Expected Where predicate");
+            }
+        } else {
+            panic!("Expected Recall statement");
+        }
+
+        // Test deeply nested field path
+        let stmt = parse("RECALL FROM WORKING WHERE data.nested.field = \"value\"").unwrap();
+        if let Statement::Recall(r) = stmt {
+            if let Predicate::Where { conditions } = r.predicate {
+                assert_eq!(conditions[0].field, "data.nested.field");
+            } else {
+                panic!("Expected Where predicate");
+            }
         } else {
             panic!("Expected Recall statement");
         }
