@@ -68,4 +68,4 @@ adb-cli/          # CLI binary
 
 ## License
 
-MIT
+ELv2 (Elastic License 2.0)
