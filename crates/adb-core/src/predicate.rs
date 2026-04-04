@@ -93,24 +93,30 @@ pub enum LogicalOp {
     Or,
 }
 
-/// A single condition in a WHERE clause
+/// A condition in a WHERE clause - can be simple or grouped
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Condition {
-    /// Field name to compare (supports dotted paths like "metadata.namespace")
-    pub field: String,
-    /// Comparison operator
-    pub operator: Operator,
-    /// Value to compare against
-    pub value: Value,
-    /// Logical operator preceding this condition (None for first condition)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub logical_op: Option<LogicalOp>,
+#[serde(untagged)]
+pub enum Condition {
+    /// Simple condition: field op value
+    Simple {
+        field: String,
+        operator: Operator,
+        value: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        logical_op: Option<LogicalOp>,
+    },
+    /// Grouped conditions (parenthesized) - evaluated as a unit
+    Group {
+        conditions: Vec<Condition>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        logical_op: Option<LogicalOp>,
+    },
 }
 
 impl Condition {
-    /// Create a new condition
+    /// Create a new simple condition
     pub fn new(field: impl Into<String>, operator: Operator, value: impl Into<Value>) -> Self {
-        Self {
+        Self::Simple {
             field: field.into(),
             operator,
             value: value.into(),
@@ -120,7 +126,7 @@ impl Condition {
 
     /// Create a new condition with logical operator
     pub fn with_logical_op(mut self, op: LogicalOp) -> Self {
-        self.logical_op = Some(op);
+        self.set_logical_op(Some(op));
         self
     }
 
@@ -144,22 +150,54 @@ impl Condition {
         Self::new(field, Operator::Lt, value)
     }
 
+    /// Get the logical operator
+    pub fn logical_op(&self) -> Option<LogicalOp> {
+        match self {
+            Condition::Simple { logical_op, .. } => *logical_op,
+            Condition::Group { logical_op, .. } => *logical_op,
+        }
+    }
+
+    /// Set the logical operator
+    pub fn set_logical_op(&mut self, op: Option<LogicalOp>) {
+        match self {
+            Condition::Simple { logical_op, .. } => *logical_op = op,
+            Condition::Group { logical_op, .. } => *logical_op = op,
+        }
+    }
+
     /// Evaluate this condition against a JSON value
-    /// Supports dotted field paths like "metadata.namespace"
+    /// Supports dotted field paths and grouped conditions
     pub fn matches(&self, data: &serde_json::Value) -> bool {
-        let field_value = get_nested_field(data, &self.field);
-        match field_value {
-            Some(v) => self.operator.compare(v, &self.value),
-            None => false,
+        match self {
+            Condition::Simple { field, operator, value, .. } => {
+                let field_value = get_nested_field(data, field);
+                match field_value {
+                    Some(v) => operator.compare(v, value),
+                    None => false,
+                }
+            }
+            Condition::Group { conditions, .. } => {
+                // Recursively evaluate the group
+                evaluate_conditions(data, conditions)
+            }
         }
     }
 
     /// Evaluate this condition against a MemoryRecord
     /// Properly handles metadata.X and data.X paths
     pub fn matches_record(&self, record: &MemoryRecord) -> bool {
-        match record.resolve_field(&self.field) {
-            Some(v) => self.operator.compare(&v, &self.value),
-            None => false,
+        match self {
+            Condition::Simple { field, operator, value, .. } => {
+                match record.resolve_field(field) {
+                    Some(v) => operator.compare(&v, value),
+                    None => false,
+                }
+            }
+            Condition::Group { conditions, .. } => {
+                // Recursively evaluate the group
+                evaluate_conditions_on_record(record, conditions)
+            }
         }
     }
 }
@@ -181,16 +219,19 @@ fn get_nested_field<'a>(data: &'a serde_json::Value, path: &str) -> Option<&'a s
 /// Evaluate a list of conditions with AND/OR logic
 /// Conditions are evaluated left-to-right with the logical_op indicating how to combine
 /// with the running result. First condition's logical_op is ignored (None or defaults to AND).
+/// Group conditions are evaluated recursively as a unit.
 pub fn evaluate_conditions(data: &serde_json::Value, conditions: &[Condition]) -> bool {
     if conditions.is_empty() {
         return true;
     }
 
+    // First condition - evaluated as-is (matches() handles Group recursively)
     let mut result = conditions[0].matches(data);
 
     for condition in &conditions[1..] {
+        // matches() handles both Simple and Group conditions
         let cond_result = condition.matches(data);
-        match condition.logical_op {
+        match condition.logical_op() {
             Some(LogicalOp::Or) => result = result || cond_result,
             Some(LogicalOp::And) | None => result = result && cond_result,
         }
@@ -201,16 +242,19 @@ pub fn evaluate_conditions(data: &serde_json::Value, conditions: &[Condition]) -
 
 /// Evaluate a list of conditions against a MemoryRecord with AND/OR logic
 /// Properly handles metadata.X and data.X paths using resolve_field
+/// Group conditions are evaluated recursively as a unit.
 pub fn evaluate_conditions_on_record(record: &MemoryRecord, conditions: &[Condition]) -> bool {
     if conditions.is_empty() {
         return true;
     }
 
+    // First condition - evaluated as-is (matches_record() handles Group recursively)
     let mut result = conditions[0].matches_record(record);
 
     for condition in &conditions[1..] {
+        // matches_record() handles both Simple and Group conditions
         let cond_result = condition.matches_record(record);
-        match condition.logical_op {
+        match condition.logical_op() {
             Some(LogicalOp::Or) => result = result || cond_result,
             Some(LogicalOp::And) | None => result = result && cond_result,
         }

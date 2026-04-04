@@ -234,18 +234,84 @@ impl LogicalOp {
     }
 }
 
-/// A condition in WHERE clause
+/// A condition in WHERE clause - can be simple or grouped
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Condition {
-    /// Field name
-    pub field: String,
-    /// Comparison operator
-    pub operator: Operator,
-    /// Value to compare
-    pub value: Value,
-    /// Logical operator preceding this condition (None for first condition)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub logical_op: Option<LogicalOp>,
+#[serde(untagged)]
+pub enum Condition {
+    /// Simple condition: field op value
+    Simple {
+        field: String,
+        operator: Operator,
+        value: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        logical_op: Option<LogicalOp>,
+    },
+    /// Grouped conditions (parenthesized) - evaluated as a unit
+    Group {
+        conditions: Vec<Condition>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        logical_op: Option<LogicalOp>,
+    },
+}
+
+impl Condition {
+    /// Create a simple condition
+    pub fn simple(field: String, operator: Operator, value: Value) -> Self {
+        Condition::Simple {
+            field,
+            operator,
+            value,
+            logical_op: None,
+        }
+    }
+
+    /// Create a group condition
+    pub fn group(conditions: Vec<Condition>) -> Self {
+        Condition::Group {
+            conditions,
+            logical_op: None,
+        }
+    }
+
+    /// Get the logical operator
+    pub fn logical_op(&self) -> Option<LogicalOp> {
+        match self {
+            Condition::Simple { logical_op, .. } => *logical_op,
+            Condition::Group { logical_op, .. } => *logical_op,
+        }
+    }
+
+    /// Set the logical operator
+    pub fn set_logical_op(&mut self, op: Option<LogicalOp>) {
+        match self {
+            Condition::Simple { logical_op, .. } => *logical_op = op,
+            Condition::Group { logical_op, .. } => *logical_op = op,
+        }
+    }
+
+    /// Get field name (only for Simple conditions)
+    pub fn field(&self) -> Option<&str> {
+        match self {
+            Condition::Simple { field, .. } => Some(field),
+            Condition::Group { .. } => None,
+        }
+    }
+
+    /// Get operator (only for Simple conditions)
+    pub fn operator(&self) -> Option<Operator> {
+        match self {
+            Condition::Simple { operator, .. } => Some(*operator),
+            Condition::Group { .. } => None,
+        }
+    }
+
+    /// Get value (only for Simple conditions)
+    pub fn value(&self) -> Option<&Value> {
+        match self {
+            Condition::Simple { value, .. } => Some(value),
+            Condition::Group { .. } => None,
+        }
+    }
 }
 
 /// Comparison operators

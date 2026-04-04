@@ -155,13 +155,25 @@ impl Executor {
         }
     }
 
-    /// Bind variables in a condition
+    /// Bind variables in a condition (handles both Simple and Group)
     fn bind_variables_in_condition(&self, condition: &Condition, bindings: &HashMap<String, Value>) -> Condition {
-        Condition {
-            field: condition.field.clone(),
-            operator: condition.operator,
-            value: self.bind_value(&condition.value, bindings),
-            logical_op: condition.logical_op,
+        match condition {
+            Condition::Simple { field, operator, value, logical_op } => {
+                Condition::Simple {
+                    field: field.clone(),
+                    operator: *operator,
+                    value: self.bind_value(value, bindings),
+                    logical_op: *logical_op,
+                }
+            }
+            Condition::Group { conditions, logical_op } => {
+                Condition::Group {
+                    conditions: conditions.iter()
+                        .map(|c| self.bind_variables_in_condition(c, bindings))
+                        .collect(),
+                    logical_op: *logical_op,
+                }
+            }
         }
     }
 
@@ -824,7 +836,7 @@ impl Executor {
                 .map(|v| json_to_value(v))
                 .unwrap_or(Value::Null);
 
-            conditions.push(Condition {
+            conditions.push(Condition::Simple {
                 field,
                 operator,
                 value,

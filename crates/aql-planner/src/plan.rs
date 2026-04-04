@@ -305,13 +305,7 @@ impl serde::Serialize for LinkData {
 fn predicate_to_conditions(pred: &Predicate) -> Vec<serde_json::Value> {
     match pred {
         Predicate::Where { conditions } => {
-            conditions.iter().map(|c| {
-                serde_json::json!({
-                    "field": c.field,
-                    "operator": format!("{:?}", c.operator),
-                    "value": condition_value_to_json(&c.value)
-                })
-            }).collect()
+            conditions.iter().map(condition_to_json).collect()
         }
         Predicate::Key { field, value } => {
             vec![serde_json::json!({
@@ -321,6 +315,33 @@ fn predicate_to_conditions(pred: &Predicate) -> Vec<serde_json::Value> {
             })]
         }
         _ => vec![]
+    }
+}
+
+/// Convert a condition to JSON (handles both Simple and Group)
+fn condition_to_json(cond: &adb_core::Condition) -> serde_json::Value {
+    match cond {
+        adb_core::Condition::Simple { field, operator, value, logical_op } => {
+            let mut obj = serde_json::json!({
+                "field": field,
+                "operator": format!("{:?}", operator),
+                "value": condition_value_to_json(value)
+            });
+            if let Some(op) = logical_op {
+                obj["logical_op"] = serde_json::json!(format!("{:?}", op));
+            }
+            obj
+        }
+        adb_core::Condition::Group { conditions, logical_op } => {
+            let mut obj = serde_json::json!({
+                "type": "group",
+                "conditions": conditions.iter().map(condition_to_json).collect::<Vec<_>>()
+            });
+            if let Some(op) = logical_op {
+                obj["logical_op"] = serde_json::json!(format!("{:?}", op));
+            }
+            obj
+        }
     }
 }
 

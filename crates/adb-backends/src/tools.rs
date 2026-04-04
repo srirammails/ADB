@@ -312,13 +312,15 @@ impl Backend for ToolsBackend {
         let task_type = if let Predicate::Where { conditions } = predicate {
             conditions
                 .iter()
-                .find(|c| c.field == "task" || c.field == "task_type")
-                .and_then(|c| {
-                    if let Value::String(s) = &c.value {
-                        Some(s.as_str())
-                    } else {
-                        None
+                .find_map(|c| {
+                    if let Condition::Simple { field, value, .. } = c {
+                        if field == "task" || field == "task_type" {
+                            if let Value::String(s) = value {
+                                return Some(s.as_str());
+                            }
+                        }
                     }
+                    None
                 })
         } else {
             None

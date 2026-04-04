@@ -376,12 +376,23 @@ fn convert_predicate(pred: &Predicate) -> PlanResult<CorePredicate> {
 }
 
 fn convert_condition(cond: &Condition) -> PlanResult<CoreCondition> {
-    Ok(CoreCondition {
-        field: cond.field.clone(),
-        operator: convert_operator(cond.operator),
-        value: convert_value(&cond.value)?,
-        logical_op: cond.logical_op.map(convert_logical_op),
-    })
+    match cond {
+        Condition::Simple { field, operator, value, logical_op } => {
+            Ok(CoreCondition::Simple {
+                field: field.clone(),
+                operator: convert_operator(*operator),
+                value: convert_value(value)?,
+                logical_op: logical_op.map(convert_logical_op),
+            })
+        }
+        Condition::Group { conditions, logical_op } => {
+            let converted: PlanResult<Vec<_>> = conditions.iter().map(convert_condition).collect();
+            Ok(CoreCondition::Group {
+                conditions: converted?,
+                logical_op: logical_op.map(convert_logical_op),
+            })
+        }
+    }
 }
 
 fn convert_logical_op(op: LogicalOp) -> CoreLogicalOp {

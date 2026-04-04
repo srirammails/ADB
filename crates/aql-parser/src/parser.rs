@@ -373,18 +373,13 @@ fn parse_condition_list(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Co
     for item in pair.into_inner() {
         match item.as_rule() {
             Rule::condition_atom => {
-                let atom_conditions = parse_condition_atom(item)?;
-                for (i, mut cond) in atom_conditions.into_iter().enumerate() {
-                    if i == 0 {
-                        // First condition in atom gets the pending logical op
-                        cond.logical_op = pending_logical_op.take();
-                    }
-                    conditions.push(cond);
-                }
+                let mut cond = parse_condition_atom(item)?;
+                cond.set_logical_op(pending_logical_op.take());
+                conditions.push(cond);
             }
             Rule::simple_condition => {
                 let mut condition = parse_simple_condition(item)?;
-                condition.logical_op = pending_logical_op.take();
+                condition.set_logical_op(pending_logical_op.take());
                 conditions.push(condition);
             }
             Rule::logical_op => {
@@ -404,28 +399,36 @@ fn parse_condition_list(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Co
 }
 
 /// Parse a condition atom (either a parenthesized group or a simple condition)
-fn parse_condition_atom(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Condition>> {
+/// Returns a single Condition (either Simple or Group)
+fn parse_condition_atom(pair: pest::iterators::Pair<Rule>) -> ParseResult<Condition> {
     let inner = pair.into_inner().next();
     match inner {
         Some(item) => match item.as_rule() {
             Rule::paren_condition => parse_paren_condition(item),
-            Rule::simple_condition => Ok(vec![parse_simple_condition(item)?]),
+            Rule::simple_condition => parse_simple_condition(item),
             _ => Err(ParseError::UnexpectedRule(format!("in condition_atom: {:?}", item.as_rule()))),
         },
-        None => Ok(vec![]),
+        None => Err(ParseError::Empty),
     }
 }
 
-/// Parse a parenthesized condition group
-fn parse_paren_condition(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Condition>> {
+/// Parse a parenthesized condition group - returns a Group condition
+fn parse_paren_condition(pair: pest::iterators::Pair<Rule>) -> ParseResult<Condition> {
     // paren_condition = { "(" ~ condition_list ~ ")" }
-    // The inner content is the condition_list
+    // Returns a Group condition containing the nested conditions
     for item in pair.into_inner() {
         if item.as_rule() == Rule::condition_list {
-            return parse_condition_list(item);
+            let conditions = parse_condition_list(item)?;
+            return Ok(Condition::Group {
+                conditions,
+                logical_op: None, // Will be set by caller
+            });
         }
     }
-    Ok(vec![])
+    Ok(Condition::Group {
+        conditions: vec![],
+        logical_op: None,
+    })
 }
 
 /// Parse a simple condition (field op value)
@@ -440,7 +443,7 @@ fn parse_simple_condition(pair: pest::iterators::Pair<Rule>) -> ParseResult<Cond
     let operator = parse_operator(inner.next().ok_or(ParseError::Missing("operator"))?)?;
     let value = parse_value(inner.next().ok_or(ParseError::Missing("value"))?)?;
 
-    Ok(Condition {
+    Ok(Condition::Simple {
         field,
         operator,
         value,
