@@ -41,4 +41,8 @@ pub enum ExecutorError {
     /// Unsupported operation
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
+
+    /// Link validation error - source or target records not found
+    #[error("Link validation failed: {0}")]
+    LinkValidation(String),
 }

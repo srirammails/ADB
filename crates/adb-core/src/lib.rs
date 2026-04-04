@@ -18,6 +18,6 @@ pub mod time;
 pub use error::{AdbError, AdbResult};
 pub use link::{Link, LinkPredicate};
 pub use memory::{MemoryRecord, MemoryType, Metadata};
-pub use predicate::{AggregateFunc, AggregateFuncType, Condition, FollowLinks, Modifiers, Operator, OrderBy, Predicate, Value, Window, WithLinks};
+pub use predicate::{evaluate_conditions, evaluate_conditions_on_record, AggregateFunc, AggregateFuncType, Condition, FollowLinks, LogicalOp, Modifiers, Operator, OrderBy, Predicate, Value, Window, WithLinks};
 pub use scope::{Namespace, Scope};
 pub use time::Ttl;

@@ -290,11 +290,51 @@ impl serde::Serialize for LinkData {
         use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("LinkData", 6)?;
         state.serialize_field("from_type", &format!("{:?}", self.from_type))?;
-        state.serialize_field("from_predicate", &format!("{:?}", self.from_predicate))?;
+        // Serialize from_predicate conditions as structured data
+        state.serialize_field("from_conditions", &predicate_to_conditions(&self.from_predicate))?;
         state.serialize_field("to_type", &format!("{:?}", self.to_type))?;
-        state.serialize_field("to_predicate", &format!("{:?}", self.to_predicate))?;
+        // Serialize to_predicate conditions as structured data
+        state.serialize_field("to_conditions", &predicate_to_conditions(&self.to_predicate))?;
         state.serialize_field("link_type", &self.link_type)?;
         state.serialize_field("weight", &self.weight)?;
         state.end()
+    }
+}
+
+/// Convert a predicate to a serializable conditions array
+fn predicate_to_conditions(pred: &Predicate) -> Vec<serde_json::Value> {
+    match pred {
+        Predicate::Where { conditions } => {
+            conditions.iter().map(|c| {
+                serde_json::json!({
+                    "field": c.field,
+                    "operator": format!("{:?}", c.operator),
+                    "value": condition_value_to_json(&c.value)
+                })
+            }).collect()
+        }
+        Predicate::Key { field, value } => {
+            vec![serde_json::json!({
+                "field": field,
+                "operator": "Eq",
+                "value": condition_value_to_json(value)
+            })]
+        }
+        _ => vec![]
+    }
+}
+
+/// Convert a condition value to JSON
+fn condition_value_to_json(value: &adb_core::Value) -> serde_json::Value {
+    match value {
+        adb_core::Value::Null => serde_json::Value::Null,
+        adb_core::Value::Bool(b) => serde_json::Value::Bool(*b),
+        adb_core::Value::Int(i) => serde_json::json!(i),
+        adb_core::Value::Float(f) => serde_json::json!(f),
+        adb_core::Value::String(s) => serde_json::Value::String(s.clone()),
+        adb_core::Value::Variable(v) => serde_json::Value::String(format!("${}", v)),
+        adb_core::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(condition_value_to_json).collect())
+        }
     }
 }

@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::memory::MemoryRecord;
 use crate::scope::Scope;
 
 /// A query predicate specifying what records to match
@@ -83,15 +84,27 @@ impl Default for Predicate {
     }
 }
 
+/// Logical operators for combining conditions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LogicalOp {
+    #[default]
+    And,
+    Or,
+}
+
 /// A single condition in a WHERE clause
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Condition {
-    /// Field name to compare
+    /// Field name to compare (supports dotted paths like "metadata.namespace")
     pub field: String,
     /// Comparison operator
     pub operator: Operator,
     /// Value to compare against
     pub value: Value,
+    /// Logical operator preceding this condition (None for first condition)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_op: Option<LogicalOp>,
 }
 
 impl Condition {
@@ -101,7 +114,14 @@ impl Condition {
             field: field.into(),
             operator,
             value: value.into(),
+            logical_op: None,
         }
+    }
+
+    /// Create a new condition with logical operator
+    pub fn with_logical_op(mut self, op: LogicalOp) -> Self {
+        self.logical_op = Some(op);
+        self
     }
 
     /// Create an equality condition
@@ -125,13 +145,78 @@ impl Condition {
     }
 
     /// Evaluate this condition against a JSON value
+    /// Supports dotted field paths like "metadata.namespace"
     pub fn matches(&self, data: &serde_json::Value) -> bool {
-        let field_value = data.get(&self.field);
+        let field_value = get_nested_field(data, &self.field);
         match field_value {
             Some(v) => self.operator.compare(v, &self.value),
             None => false,
         }
     }
+
+    /// Evaluate this condition against a MemoryRecord
+    /// Properly handles metadata.X and data.X paths
+    pub fn matches_record(&self, record: &MemoryRecord) -> bool {
+        match record.resolve_field(&self.field) {
+            Some(v) => self.operator.compare(&v, &self.value),
+            None => false,
+        }
+    }
+}
+
+/// Get a nested field value using dotted path notation
+/// e.g., "metadata.namespace" returns data["metadata"]["namespace"]
+fn get_nested_field<'a>(data: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = data;
+    for part in parts {
+        match current.get(part) {
+            Some(v) => current = v,
+            None => return None,
+        }
+    }
+    Some(current)
+}
+
+/// Evaluate a list of conditions with AND/OR logic
+/// Conditions are evaluated left-to-right with the logical_op indicating how to combine
+/// with the running result. First condition's logical_op is ignored (None or defaults to AND).
+pub fn evaluate_conditions(data: &serde_json::Value, conditions: &[Condition]) -> bool {
+    if conditions.is_empty() {
+        return true;
+    }
+
+    let mut result = conditions[0].matches(data);
+
+    for condition in &conditions[1..] {
+        let cond_result = condition.matches(data);
+        match condition.logical_op {
+            Some(LogicalOp::Or) => result = result || cond_result,
+            Some(LogicalOp::And) | None => result = result && cond_result,
+        }
+    }
+
+    result
+}
+
+/// Evaluate a list of conditions against a MemoryRecord with AND/OR logic
+/// Properly handles metadata.X and data.X paths using resolve_field
+pub fn evaluate_conditions_on_record(record: &MemoryRecord, conditions: &[Condition]) -> bool {
+    if conditions.is_empty() {
+        return true;
+    }
+
+    let mut result = conditions[0].matches_record(record);
+
+    for condition in &conditions[1..] {
+        let cond_result = condition.matches_record(record);
+        match condition.logical_op {
+            Some(LogicalOp::Or) => result = result || cond_result,
+            Some(LogicalOp::And) | None => result = result && cond_result,
+        }
+    }
+
+    result
 }
 
 /// Comparison operators

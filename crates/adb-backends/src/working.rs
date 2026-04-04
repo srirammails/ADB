@@ -14,8 +14,8 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 use adb_core::{
-    AdbError, AdbResult, Condition, MemoryRecord, MemoryType, Metadata, Modifiers, Predicate,
-    Scope, Value, Window,
+    evaluate_conditions_on_record, AdbError, AdbResult, Condition, MemoryRecord, MemoryType, Metadata,
+    Modifiers, Predicate, Scope, Value, Window,
 };
 
 use crate::backend::{Backend, BackendInfo};
@@ -108,7 +108,7 @@ impl WorkingBackend {
                 }
             }
             Predicate::Where { conditions } => {
-                conditions.iter().all(|c| self.matches_condition(record, c))
+                evaluate_conditions_on_record(record, conditions)
             }
             Predicate::Like { .. } => false, // Working memory doesn't support embedding
             Predicate::Pattern { .. } => false, // Working memory doesn't support pattern
@@ -154,6 +154,13 @@ impl WorkingBackend {
         // Update accessed_at for each record
         for record in &mut records {
             record.touch();
+        }
+
+        // Apply RETURN (field projection) - supports dotted paths like "metadata.scope"
+        if let Some(ref return_fields) = modifiers.return_fields {
+            for record in &mut records {
+                record.data = record.project_fields(return_fields);
+            }
         }
 
         records
@@ -312,17 +319,23 @@ impl Backend for WorkingBackend {
     ) -> AdbResult<u64> {
         let mut count = 0u64;
 
-        // Find matching records
+        // Find matching records (excluding already expired ones)
         let keys: Vec<String> = self
             .store
             .iter()
+            .filter(|r| !r.value().is_expired()) // Skip expired records
             .filter(|r| self.matches_predicate(r.value(), predicate))
             .map(|r| r.key().clone())
             .collect();
 
-        // Update each record
+        // Update each record with race condition protection
         for key in keys {
             if let Some(mut entry) = self.store.get_mut(&key) {
+                // Double-check expiration under lock to handle race with TTL reaper
+                if entry.is_expired() {
+                    continue; // Skip expired record (TTL may have expired between collect and update)
+                }
+
                 // Merge data
                 if let serde_json::Value::Object(updates) = &data {
                     if let serde_json::Value::Object(ref mut existing) = entry.data {
@@ -337,6 +350,8 @@ impl Backend for WorkingBackend {
                 entry.metadata.touch();
                 count += 1;
             }
+            // If get_mut returns None, the record was removed by TTL reaper
+            // This is expected and we don't count it as an update
         }
 
         Ok(count)
@@ -652,5 +667,91 @@ mod tests {
         backend.clear().await.unwrap();
 
         assert_eq!(backend.count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_update_expired_record() {
+        // B22: UPDATE/TTL race condition test
+        let backend = WorkingBackend::new();
+
+        // Store record with very short TTL (10ms)
+        backend
+            .store(
+                "ttl-item",
+                json!({"status": "active", "value": 100}),
+                Scope::Private,
+                None,
+                Some(Duration::from_millis(10)),
+            )
+            .await
+            .unwrap();
+
+        // Verify it exists initially
+        let results = backend
+            .lookup(&Predicate::key("id", "ttl-item"), &Modifiers::default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Wait for TTL to expire
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Try to update the expired record
+        let update_count = backend
+            .update(
+                &Predicate::key("id", "ttl-item"),
+                json!({"status": "updated", "value": 200}),
+            )
+            .await
+            .unwrap();
+
+        // Update count should be 0 because record is expired
+        assert_eq!(update_count, 0, "Should not update expired record");
+
+        // Lookup should also return empty (expired records filtered)
+        let results = backend
+            .lookup(&Predicate::key("id", "ttl-item"), &Modifiers::default())
+            .await
+            .unwrap();
+        let non_expired: Vec<_> = results.into_iter().filter(|r| !r.is_expired()).collect();
+        assert_eq!(non_expired.len(), 0, "Expired record should not be returned");
+    }
+
+    #[tokio::test]
+    async fn test_update_non_expired_record() {
+        // Ensure UPDATE still works normally for non-TTL records
+        let backend = WorkingBackend::new();
+
+        // Store record without TTL
+        backend
+            .store(
+                "normal-item",
+                json!({"status": "active", "value": 100}),
+                Scope::Private,
+                None,
+                None, // No TTL
+            )
+            .await
+            .unwrap();
+
+        // Update should succeed
+        let update_count = backend
+            .update(
+                &Predicate::key("id", "normal-item"),
+                json!({"status": "updated", "value": 200}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(update_count, 1, "Should update non-expired record");
+
+        // Verify the update applied
+        let results = backend
+            .lookup(&Predicate::key("id", "normal-item"), &Modifiers::default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].get_str("status"), Some("updated"));
+        assert_eq!(results[0].get_i64("value"), Some(200));
     }
 }

@@ -508,3 +508,170 @@ async fn test_having_with_alias() {
         panic!("Expected Aggregation result");
     }
 }
+
+// ============================================================================
+// LINK tests (B16: Link validation)
+// ============================================================================
+
+#[tokio::test]
+async fn test_link_creates_link_when_records_exist() {
+    let adb = Arc::new(Adb::new());
+
+    // Store source record in PROCEDURAL
+    adb.store(
+        MemoryType::Procedural,
+        "oom-fix",
+        json!({
+            "pattern_id": "oom-fix",
+            "pattern": "OOMKilled",
+            "steps": ["Check memory", "Increase limit"]
+        }),
+    ).await.unwrap();
+
+    // Store target record in EPISODIC
+    adb.store(
+        MemoryType::Episodic,
+        "inc-001",
+        json!({
+            "incident_id": "inc-001",
+            "incident_type": "OOM",
+            "pod": "api-server"
+        }),
+    ).await.unwrap();
+
+    let executor = Executor::new(Arc::clone(&adb));
+
+    // LINK statement should succeed
+    let result = executor.execute(
+        r#"LINK FROM PROCEDURAL WHERE pattern_id = "oom-fix" TO EPISODIC WHERE incident_id = "inc-001" TYPE "applied_to" WEIGHT 0.95"#
+    ).await.unwrap();
+
+    assert!(result.success, "LINK should succeed when both records exist");
+
+    // Verify link was created
+    let links = adb.get_links_from(MemoryType::Procedural, "oom-fix", Some("applied_to")).await.unwrap();
+    assert_eq!(links.len(), 1, "One link should be created");
+    assert_eq!(links[0].to_id, "inc-001");
+    assert!((links[0].weight - 0.95).abs() < 0.01);
+}
+
+#[tokio::test]
+async fn test_link_fails_when_source_not_found() {
+    let adb = Arc::new(Adb::new());
+
+    // Only store target record, no source
+    adb.store(
+        MemoryType::Episodic,
+        "inc-001",
+        json!({
+            "incident_id": "inc-001",
+            "incident_type": "OOM"
+        }),
+    ).await.unwrap();
+
+    let executor = Executor::new(Arc::clone(&adb));
+
+    // LINK statement should fail - no source records
+    let result = executor.execute(
+        r#"LINK FROM PROCEDURAL WHERE pattern_id = "nonexistent" TO EPISODIC WHERE incident_id = "inc-001" TYPE "applied_to""#
+    ).await;
+
+    assert!(result.is_err(), "LINK should fail when source records don't exist");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("No source records found"), "Error should mention source records: {}", err_msg);
+}
+
+#[tokio::test]
+async fn test_link_fails_when_target_not_found() {
+    let adb = Arc::new(Adb::new());
+
+    // Only store source record, no target
+    adb.store(
+        MemoryType::Procedural,
+        "oom-fix",
+        json!({
+            "pattern_id": "oom-fix",
+            "pattern": "OOMKilled"
+        }),
+    ).await.unwrap();
+
+    let executor = Executor::new(Arc::clone(&adb));
+
+    // LINK statement should fail - no target records
+    let result = executor.execute(
+        r#"LINK FROM PROCEDURAL WHERE pattern_id = "oom-fix" TO EPISODIC WHERE incident_id = "nonexistent" TYPE "applied_to""#
+    ).await;
+
+    assert!(result.is_err(), "LINK should fail when target records don't exist");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("No target records found"), "Error should mention target records: {}", err_msg);
+}
+
+// ============================================================================
+// PIPELINE variable binding tests (B29)
+// ============================================================================
+
+#[tokio::test]
+async fn test_pipeline_variable_binding() {
+    // B29: Test that {var} in later stages binds to values from earlier stages
+    let adb = Arc::new(Adb::new());
+
+    // Store a record in WORKING with a "target_pod" field
+    adb.store(
+        MemoryType::Working,
+        "task-1",
+        json!({
+            "name": "Find incidents",
+            "target_pod": "payments"
+        }),
+    ).await.unwrap();
+
+    // Store records in EPISODIC with different "pod" values
+    adb.store(
+        MemoryType::Episodic,
+        "inc-001",
+        json!({
+            "pod": "payments",
+            "severity": "critical"
+        }),
+    ).await.unwrap();
+
+    adb.store(
+        MemoryType::Episodic,
+        "inc-002",
+        json!({
+            "pod": "auth",
+            "severity": "warning"
+        }),
+    ).await.unwrap();
+
+    let executor = Executor::new(Arc::clone(&adb));
+
+    // Pipeline: First stage gets target_pod from WORKING,
+    // second stage uses {target_pod} to filter EPISODIC
+    let result = executor.execute(
+        r#"PIPELINE var_test LOOKUP FROM WORKING KEY id = "task-1" | RECALL FROM EPISODIC WHERE pod = {target_pod}"#
+    ).await.unwrap();
+
+    assert!(result.success, "Pipeline should succeed");
+
+    // Check pipeline results
+    if let adb_executor::ResultSet::Pipeline { steps } = result.data {
+        assert_eq!(steps.len(), 2, "Should have 2 pipeline steps");
+
+        // First step should return task-1
+        assert!(steps[0].success);
+        let first_records = steps[0].get_records().unwrap();
+        assert_eq!(first_records.len(), 1);
+        assert_eq!(first_records[0].get_str("target_pod"), Some("payments"));
+
+        // Second step should return only inc-001 (pod = "payments")
+        assert!(steps[1].success);
+        let second_records = steps[1].get_records().unwrap();
+        assert_eq!(second_records.len(), 1, "Variable binding should filter to only 'payments' pod");
+        assert_eq!(second_records[0].id, "inc-001");
+        assert_eq!(second_records[0].get_str("pod"), Some("payments"));
+    } else {
+        panic!("Expected Pipeline result");
+    }
+}

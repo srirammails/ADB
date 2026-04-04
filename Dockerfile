@@ -27,5 +27,5 @@ COPY --from=builder /app/target/release/adb /usr/local/bin/adb
 # Expose MCP port (if using HTTP transport)
 EXPOSE 3000
 
-# Default command - run MCP server on stdio
-CMD ["adb"]
+# Default command - run HTTP server
+CMD ["adb", "serve-http", "--port", "3000"]

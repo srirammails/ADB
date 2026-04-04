@@ -33,9 +33,12 @@ dependencies = [
  "adb-executor",
  "adb-mcp",
  "adb-server",
+ "axum",
  "clap",
+ "serde",
  "serde_json",
  "tokio",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
 ]

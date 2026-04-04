@@ -247,6 +247,109 @@ impl MemoryRecord {
     pub fn touch(&mut self) {
         self.metadata.touch();
     }
+
+    /// Resolve a field path to a JSON value
+    /// Handles:
+    /// - Simple fields: look in data map (e.g., "campaign")
+    /// - metadata.X: look in metadata struct (e.g., "metadata.namespace")
+    /// - data.X: explicit data map access (e.g., "data.campaign")
+    pub fn resolve_field(&self, field_path: &str) -> Option<serde_json::Value> {
+        let parts: Vec<&str> = field_path.splitn(2, '.').collect();
+
+        if parts.len() == 1 {
+            // Simple field - look in data map, or check special fields
+            match parts[0] {
+                "id" => Some(serde_json::Value::String(self.id.clone())),
+                _ => self.data.get(parts[0]).cloned(),
+            }
+        } else {
+            let (prefix, key) = (parts[0], parts[1]);
+            match prefix {
+                "metadata" => self.resolve_metadata_field(key),
+                "data" => self.resolve_data_field(key),
+                _ => {
+                    // Unknown prefix - try nested lookup in data map
+                    self.data.get(field_path).cloned()
+                }
+            }
+        }
+    }
+
+    /// Resolve a metadata field by name
+    fn resolve_metadata_field(&self, key: &str) -> Option<serde_json::Value> {
+        match key {
+            "namespace" => self.metadata.namespace.as_ref()
+                .map(|v| serde_json::Value::String(v.clone())),
+            "scope" => Some(serde_json::Value::String(self.metadata.scope.as_str().to_string())),
+            "version" => Some(serde_json::json!(self.metadata.version)),
+            "created_at" => Some(serde_json::Value::String(self.metadata.created_at.to_rfc3339())),
+            "accessed_at" => Some(serde_json::Value::String(self.metadata.accessed_at.to_rfc3339())),
+            "ttl" => self.metadata.ttl.map(|d| serde_json::json!(d.as_millis() as u64)),
+            _ => None,
+        }
+    }
+
+    /// Resolve a data field by name (handles nested paths)
+    fn resolve_data_field(&self, key: &str) -> Option<serde_json::Value> {
+        // Handle nested paths within data
+        let parts: Vec<&str> = key.split('.').collect();
+        let mut current = &self.data;
+        for part in parts {
+            match current.get(part) {
+                Some(v) => current = v,
+                None => return None,
+            }
+        }
+        Some(current.clone())
+    }
+
+    /// Project specified fields from this record, supporting dotted paths like "metadata.scope"
+    /// Returns a new data value containing only the requested fields
+    pub fn project_fields(&self, return_fields: &[String]) -> serde_json::Value {
+        let mut projected = serde_json::Map::new();
+
+        for field in return_fields {
+            if field == "*" {
+                // Return all data fields
+                if let serde_json::Value::Object(obj) = &self.data {
+                    for (k, v) in obj.iter() {
+                        projected.insert(k.clone(), v.clone());
+                    }
+                }
+                continue;
+            }
+
+            // Resolve the field path and insert under the full path key
+            if let Some(value) = self.resolve_field(field) {
+                projected.insert(field.clone(), value);
+            }
+        }
+
+        serde_json::Value::Object(projected)
+    }
+
+    /// Create a combined JSON view for condition evaluation (legacy, for compatibility)
+    pub fn as_condition_data(&self) -> serde_json::Value {
+        let mut combined = self.data.clone();
+        if let serde_json::Value::Object(ref mut map) = combined {
+            map.insert("id".to_string(), serde_json::Value::String(self.id.clone()));
+            // Build metadata object manually for reliable field access
+            let mut meta = serde_json::Map::new();
+            meta.insert("scope".to_string(), serde_json::Value::String(self.metadata.scope.as_str().to_string()));
+            if let Some(ref ns) = self.metadata.namespace {
+                meta.insert("namespace".to_string(), serde_json::Value::String(ns.clone()));
+            }
+            meta.insert("version".to_string(), serde_json::json!(self.metadata.version));
+            meta.insert("created_at".to_string(), serde_json::Value::String(self.metadata.created_at.to_rfc3339()));
+            meta.insert("accessed_at".to_string(), serde_json::Value::String(self.metadata.accessed_at.to_rfc3339()));
+            if let Some(ttl) = self.metadata.ttl {
+                meta.insert("ttl".to_string(), serde_json::json!(ttl.as_millis() as u64));
+            }
+            map.insert("metadata".to_string(), serde_json::Value::Object(meta));
+            map.insert("data".to_string(), self.data.clone());
+        }
+        combined
+    }
 }
 
 // Custom serde for Option<Duration>

@@ -53,19 +53,18 @@ fn parse_statement(pair: pest::iterators::Pair<Rule>) -> ParseResult<Statement> 
 
 /// Parse PIPELINE statement
 fn parse_pipeline(pair: pest::iterators::Pair<Rule>) -> ParseResult<Statement> {
-    let mut inner = pair.into_inner();
-
-    let name = inner
-        .next()
-        .ok_or(ParseError::Missing("pipeline name"))?
-        .as_str()
-        .to_string();
-
+    let mut name = String::from("_anonymous");
     let mut timeout = None;
     let mut stages = Vec::new();
 
-    for item in inner {
+    for item in pair.into_inner() {
         match item.as_rule() {
+            Rule::pipeline_name => {
+                // Extract the identifier from pipeline_name
+                if let Some(ident) = item.into_inner().find(|p| p.as_rule() == Rule::identifier) {
+                    name = ident.as_str().to_string();
+                }
+            }
             Rule::timeout_mod => {
                 timeout = Some(parse_duration_from_mod(item)?);
             }
@@ -373,8 +372,18 @@ fn parse_condition_list(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Co
 
     for item in pair.into_inner() {
         match item.as_rule() {
-            Rule::condition => {
-                let mut condition = parse_condition(item)?;
+            Rule::condition_atom => {
+                let atom_conditions = parse_condition_atom(item)?;
+                for (i, mut cond) in atom_conditions.into_iter().enumerate() {
+                    if i == 0 {
+                        // First condition in atom gets the pending logical op
+                        cond.logical_op = pending_logical_op.take();
+                    }
+                    conditions.push(cond);
+                }
+            }
+            Rule::simple_condition => {
+                let mut condition = parse_simple_condition(item)?;
                 condition.logical_op = pending_logical_op.take();
                 conditions.push(condition);
             }
@@ -394,8 +403,33 @@ fn parse_condition_list(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Co
     Ok(conditions)
 }
 
-/// Parse a single condition
-fn parse_condition(pair: pest::iterators::Pair<Rule>) -> ParseResult<Condition> {
+/// Parse a condition atom (either a parenthesized group or a simple condition)
+fn parse_condition_atom(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Condition>> {
+    let inner = pair.into_inner().next();
+    match inner {
+        Some(item) => match item.as_rule() {
+            Rule::paren_condition => parse_paren_condition(item),
+            Rule::simple_condition => Ok(vec![parse_simple_condition(item)?]),
+            _ => Err(ParseError::UnexpectedRule(format!("in condition_atom: {:?}", item.as_rule()))),
+        },
+        None => Ok(vec![]),
+    }
+}
+
+/// Parse a parenthesized condition group
+fn parse_paren_condition(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Condition>> {
+    // paren_condition = { "(" ~ condition_list ~ ")" }
+    // The inner content is the condition_list
+    for item in pair.into_inner() {
+        if item.as_rule() == Rule::condition_list {
+            return parse_condition_list(item);
+        }
+    }
+    Ok(vec![])
+}
+
+/// Parse a simple condition (field op value)
+fn parse_simple_condition(pair: pest::iterators::Pair<Rule>) -> ParseResult<Condition> {
     let mut inner = pair.into_inner();
 
     let field = inner
@@ -639,8 +673,8 @@ fn parse_window(pair: pest::iterators::Pair<Rule>) -> ParseResult<Window> {
                 Ok(Window::LastN { count })
             }
         }
-        Rule::condition => {
-            let condition = parse_condition(first)?;
+        Rule::simple_condition => {
+            let condition = parse_simple_condition(first)?;
             Ok(Window::Since { condition })
         }
         _ => Err(ParseError::UnexpectedRule(format!("{:?}", first.as_rule()))),
@@ -859,6 +893,38 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_anonymous_pipeline() {
+        // Anonymous pipeline (no name) - should generate a default name
+        let stmt = parse("PIPELINE SCAN FROM WORKING | RECALL FROM EPISODIC WHERE pod = \"test\"").unwrap();
+        if let Statement::Pipeline(p) = stmt {
+            // Anonymous pipelines get "_anonymous" as the default name
+            assert_eq!(p.name, "_anonymous", "Anonymous pipeline should have '_anonymous' name");
+            assert_eq!(p.stages.len(), 2);
+            // Verify first stage is SCAN
+            assert!(matches!(p.stages[0], Statement::Scan(_)));
+            // Verify second stage is RECALL
+            assert!(matches!(p.stages[1], Statement::Recall(_)));
+        } else {
+            panic!("Expected Pipeline statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_pipeline_without_timeout() {
+        // Pipeline without TIMEOUT modifier - B18 related
+        let stmt = parse("PIPELINE quick_scan SCAN FROM WORKING LIMIT 5");
+        match stmt {
+            Ok(Statement::Pipeline(p)) => {
+                assert_eq!(p.name, "quick_scan");
+                assert!(p.timeout.is_none(), "Pipeline without TIMEOUT should have None");
+                assert_eq!(p.stages.len(), 1);
+            }
+            Ok(_) => panic!("Expected Pipeline statement"),
+            Err(e) => panic!("Should parse pipeline without timeout: {}", e),
+        }
+    }
+
+    #[test]
     fn test_parse_reflect() {
         let stmt = parse(
             "REFLECT FROM EPISODIC WHERE incident_id = {current}, \
@@ -989,6 +1055,38 @@ mod tests {
             }
         } else {
             panic!("Expected Recall statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_reflect_then_store() {
+        // B8: REFLECT THEN STORE should parse
+        let result = parse(
+            r#"REFLECT FROM EPISODIC WHERE campaign = "summer_2026" THEN STORE INTO SEMANTIC (concept = "insight", confidence = 0.75)"#
+        );
+        match result {
+            Ok(Statement::Reflect(r)) => {
+                assert!(r.then_clause.is_some(), "THEN clause should be present");
+                if let Some(then_stmt) = r.then_clause {
+                    assert!(matches!(*then_stmt, Statement::Store(_)), "THEN clause should be STORE");
+                }
+            }
+            Ok(_) => panic!("Expected Reflect statement"),
+            Err(e) => panic!("B8: REFLECT THEN STORE failed to parse: {}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_or_in_forget() {
+        // B12: OR in FORGET should parse
+        let result = parse(r#"FORGET FROM EPISODIC WHERE campaign = "a" OR campaign = "b""#);
+        match result {
+            Ok(Statement::Forget(f)) => {
+                assert_eq!(f.conditions.len(), 2, "Should have 2 conditions");
+                assert_eq!(f.conditions[1].logical_op, Some(LogicalOp::Or));
+            }
+            Ok(_) => panic!("Expected Forget statement"),
+            Err(e) => panic!("B12: OR in FORGET failed to parse: {}", e),
         }
     }
 

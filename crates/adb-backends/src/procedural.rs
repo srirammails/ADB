@@ -14,7 +14,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use adb_core::{
-    AdbResult, Condition, MemoryRecord, MemoryType, Metadata, Modifiers, Predicate, Scope, Value,
+    evaluate_conditions, AdbResult, Condition, MemoryRecord, MemoryType, Metadata, Modifiers,
+    Predicate, Scope, Value,
 };
 
 use crate::backend::{Backend, BackendInfo};
@@ -256,7 +257,8 @@ impl ProceduralBackend {
                 _ => false,
             },
             Predicate::Where { conditions } => {
-                conditions.iter().all(|c| self.matches_condition(proc, c))
+                let proc_json = serde_json::to_value(proc).unwrap_or_default();
+                evaluate_conditions(&proc_json, conditions)
             }
             Predicate::Pattern { .. } => true, // Pattern matching handled separately
             Predicate::Like { .. } => false,    // Not supported

@@ -3,15 +3,15 @@
 //! Converts parsed AST statements into executable plans.
 
 use adb_core::{
-    Condition as CoreCondition, MemoryType as CoreMemoryType, Modifiers as CoreModifiers,
-    Operator as CoreOperator, OrderBy as CoreOrderBy, Predicate as CorePredicate, Scope as CoreScope,
-    Value as CoreValue, Window as CoreWindow, AggregateFunc as CoreAggregateFunc,
-    AggregateFuncType as CoreAggregateFuncType,
+    Condition as CoreCondition, LogicalOp as CoreLogicalOp, MemoryType as CoreMemoryType,
+    Modifiers as CoreModifiers, Operator as CoreOperator, OrderBy as CoreOrderBy,
+    Predicate as CorePredicate, Scope as CoreScope, Value as CoreValue, Window as CoreWindow,
+    AggregateFunc as CoreAggregateFunc, AggregateFuncType as CoreAggregateFuncType,
 };
 use aql_parser::ast::{
     AggregateFunc, AggregateFuncType, Condition, FieldAssignment, ForgetStmt, LinkStmt, LoadStmt,
-    LookupStmt, MemoryType, Modifiers, Operator, PipelineStmt, Predicate, RecallStmt, ReflectSource,
-    ReflectStmt, ScanStmt, Scope, Statement, StoreStmt, UpdateStmt, Value, Window,
+    LogicalOp, LookupStmt, MemoryType, Modifiers, Operator, PipelineStmt, Predicate, RecallStmt,
+    ReflectSource, ReflectStmt, ScanStmt, Scope, Statement, StoreStmt, UpdateStmt, Value, Window,
 };
 
 use crate::error::{PlanError, PlanResult};
@@ -191,7 +191,23 @@ impl Planner {
     }
 
     /// Plan a lookup statement
+    /// LOOKUP is only valid on PROCEDURAL, TOOLS, and SEMANTIC (§5 of spec)
     fn plan_lookup(&self, stmt: &LookupStmt) -> PlanResult<StepPlan> {
+        // Validate memory type - LOOKUP not allowed on WORKING or EPISODIC
+        match stmt.memory_type {
+            MemoryType::Working => {
+                return Err(PlanError::InvalidMemoryType(
+                    "LOOKUP is not valid on WORKING memory. Use SCAN or RECALL instead.".to_string()
+                ));
+            }
+            MemoryType::Episodic => {
+                return Err(PlanError::InvalidMemoryType(
+                    "LOOKUP is not valid on EPISODIC memory. Use RECALL instead.".to_string()
+                ));
+            }
+            _ => {}
+        }
+
         let memory_type = convert_memory_type(stmt.memory_type)?;
         let predicate = convert_predicate(&stmt.predicate)?;
         let modifiers = convert_modifiers(&stmt.modifiers)?;
@@ -277,8 +293,12 @@ impl Planner {
 
     /// Plan a link statement
     fn plan_link(&self, stmt: &LinkStmt) -> PlanResult<StepPlan> {
-        let from_type = convert_memory_type(stmt.from_type)?;
-        let to_type = convert_memory_type(stmt.to_type)?;
+        let from_type = convert_memory_type(stmt.from_type).map_err(|_| {
+            PlanError::InvalidMemoryType("ALL cannot be used as LINK source memory type".to_string())
+        })?;
+        let to_type = convert_memory_type(stmt.to_type).map_err(|_| {
+            PlanError::InvalidMemoryType("ALL cannot be used as LINK target memory type".to_string())
+        })?;
 
         let from_predicate = CorePredicate::Where {
             conditions: stmt
@@ -360,7 +380,15 @@ fn convert_condition(cond: &Condition) -> PlanResult<CoreCondition> {
         field: cond.field.clone(),
         operator: convert_operator(cond.operator),
         value: convert_value(&cond.value)?,
+        logical_op: cond.logical_op.map(convert_logical_op),
     })
+}
+
+fn convert_logical_op(op: LogicalOp) -> CoreLogicalOp {
+    match op {
+        LogicalOp::And => CoreLogicalOp::And,
+        LogicalOp::Or => CoreLogicalOp::Or,
+    }
 }
 
 fn convert_operator(op: Operator) -> CoreOperator {

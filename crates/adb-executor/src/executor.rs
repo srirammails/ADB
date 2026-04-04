@@ -161,6 +161,7 @@ impl Executor {
             field: condition.field.clone(),
             operator: condition.operator,
             value: self.bind_value(&condition.value, bindings),
+            logical_op: condition.logical_op,
         }
     }
 
@@ -506,14 +507,7 @@ impl Executor {
                 target_records
                     .into_iter()
                     .map(|mut r| {
-                        if let Some(obj) = r.data.as_object() {
-                            let projected: serde_json::Map<String, serde_json::Value> = obj
-                                .iter()
-                                .filter(|(k, _)| return_fields.contains(k))
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                            r.data = serde_json::Value::Object(projected);
-                        }
+                        r.data = r.project_fields(return_fields);
                         r
                     })
                     .collect()
@@ -712,10 +706,133 @@ impl Executor {
         Ok(QueryResult::count(count, start.elapsed().as_millis() as u64))
     }
 
-    async fn execute_link(&self, _step: &StepPlan) -> ExecutorResult<QueryResult> {
-        // TODO: Implement link creation
-        // This requires extracting LinkData from step.data and calling adb.link()
-        Ok(QueryResult::empty(0))
+    async fn execute_link(&self, step: &StepPlan) -> ExecutorResult<QueryResult> {
+        let start = Instant::now();
+
+        // Extract link data from step.data
+        let data = step
+            .data
+            .as_ref()
+            .ok_or_else(|| ExecutorError::MissingData("link data".to_string()))?;
+
+        // Get link metadata
+        let link_type = data
+            .get("link_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExecutorError::MissingData("link_type".to_string()))?;
+
+        let weight = data
+            .get("weight")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+
+        // Parse target memory type
+        let to_type_str = data
+            .get("to_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ExecutorError::MissingData("to_type".to_string()))?;
+
+        let to_type = match to_type_str {
+            "Working" => MemoryType::Working,
+            "Tools" => MemoryType::Tools,
+            "Procedural" => MemoryType::Procedural,
+            "Semantic" => MemoryType::Semantic,
+            "Episodic" => MemoryType::Episodic,
+            _ => return Err(ExecutorError::InvalidOperation(format!("Invalid target memory type: {}", to_type_str))),
+        };
+
+        // Build target predicate from to_conditions
+        let to_predicate = self.build_predicate_from_conditions(data.get("to_conditions"))?;
+
+        // Look up source records using step.memory_type and step.predicate
+        let source_records = self
+            .adb
+            .lookup(step.memory_type, &step.predicate)
+            .await?;
+
+        if source_records.is_empty() {
+            return Err(ExecutorError::LinkValidation(
+                format!("No source records found in {:?} matching predicate", step.memory_type)
+            ));
+        }
+
+        // Look up target records
+        let target_records = self
+            .adb
+            .lookup(to_type, &to_predicate)
+            .await?;
+
+        if target_records.is_empty() {
+            return Err(ExecutorError::LinkValidation(
+                format!("No target records found in {:?} matching predicate", to_type)
+            ));
+        }
+
+        // Create links between all matching source and target records
+        let mut link_count = 0u64;
+        for source in &source_records {
+            for target in &target_records {
+                self.adb
+                    .link(step.memory_type, &source.id, to_type, &target.id, link_type, weight)
+                    .await?;
+                link_count += 1;
+            }
+        }
+
+        Ok(QueryResult::count(link_count, start.elapsed().as_millis() as u64))
+    }
+
+    /// Build a predicate from serialized conditions array
+    fn build_predicate_from_conditions(&self, conditions_value: Option<&serde_json::Value>) -> ExecutorResult<Predicate> {
+        let conditions_arr = conditions_value
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ExecutorError::MissingData("to_conditions".to_string()))?;
+
+        if conditions_arr.is_empty() {
+            return Ok(Predicate::All);
+        }
+
+        let mut conditions = Vec::new();
+        for cond_val in conditions_arr {
+            let field = cond_val
+                .get("field")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ExecutorError::MissingData("condition field".to_string()))?
+                .to_string();
+
+            let operator_str = cond_val
+                .get("operator")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ExecutorError::MissingData("condition operator".to_string()))?;
+
+            let operator = match operator_str {
+                "Eq" => adb_core::Operator::Eq,
+                "Ne" => adb_core::Operator::Ne,
+                "Gt" => adb_core::Operator::Gt,
+                "Gte" => adb_core::Operator::Gte,
+                "Lt" => adb_core::Operator::Lt,
+                "Lte" => adb_core::Operator::Lte,
+                "Contains" => adb_core::Operator::Contains,
+                "StartsWith" => adb_core::Operator::StartsWith,
+                "EndsWith" => adb_core::Operator::EndsWith,
+                "In" => adb_core::Operator::In,
+                _ => return Err(ExecutorError::InvalidOperation(format!("Unknown operator: {}", operator_str))),
+            };
+
+            let value = cond_val
+                .get("value")
+                .map(|v| json_to_value(v))
+                .unwrap_or(Value::Null);
+
+            conditions.push(Condition {
+                field,
+                operator,
+                value,
+                logical_op: None,
+            });
+        }
+
+        Ok(Predicate::Where { conditions })
     }
 }
 

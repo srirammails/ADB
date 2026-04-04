@@ -16,7 +16,8 @@ use datafusion::prelude::*;
 use parking_lot::RwLock;
 
 use adb_core::{
-    AdbError, AdbResult, MemoryRecord, MemoryType, Modifiers, Predicate, Scope, Value, Window,
+    evaluate_conditions_on_record, AdbError, AdbResult, MemoryRecord, MemoryType, Modifiers, Predicate,
+    Scope, Value, Window,
 };
 
 use crate::backend::{Backend, BackendInfo};
@@ -280,17 +281,10 @@ impl EpisodicBackend {
             results.truncate(limit);
         }
 
-        // Apply RETURN (field projection)
+        // Apply RETURN (field projection) - supports dotted paths like "metadata.scope"
         if let Some(ref return_fields) = modifiers.return_fields {
             for record in &mut results {
-                if let Some(obj) = record.data.as_object() {
-                    let projected: serde_json::Map<String, serde_json::Value> = obj
-                        .iter()
-                        .filter(|(k, _)| return_fields.contains(k))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    record.data = serde_json::Value::Object(projected);
-                }
+                record.data = record.project_fields(return_fields);
             }
         }
 
@@ -350,7 +344,7 @@ impl EpisodicBackend {
     /// Check if a record matches predicate
     fn matches_predicate(&self, record: &MemoryRecord, predicate: &Predicate) -> bool {
         match predicate {
-            Predicate::Where { conditions } => conditions.iter().all(|c| c.matches(&record.data)),
+            Predicate::Where { conditions } => evaluate_conditions_on_record(record, conditions),
             Predicate::Key { field, value } => {
                 let key_value = value_to_string(value);
                 if field == "id" || field == "key" {
@@ -453,7 +447,7 @@ impl Backend for EpisodicBackend {
             }
             Predicate::Where { conditions } => records
                 .values()
-                .filter(|r| conditions.iter().all(|c| c.matches(&r.data)))
+                .filter(|r| evaluate_conditions_on_record(r, conditions))
                 .cloned()
                 .collect(),
             Predicate::All => records.values().cloned().collect(),

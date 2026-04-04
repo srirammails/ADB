@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use adb_core::{
-    AdbResult, Condition, MemoryRecord, MemoryType, Metadata, Modifiers, Predicate, Scope, Value,
-    Window,
+    evaluate_conditions, AdbResult, Condition, MemoryRecord, MemoryType, Metadata, Modifiers,
+    Predicate, Scope, Value, Window,
 };
 
 use crate::backend::{Backend, BackendInfo};
@@ -173,7 +173,8 @@ impl ToolsBackend {
                 }
             }
             Predicate::Where { conditions } => {
-                conditions.iter().all(|c| self.matches_condition(tool, c))
+                let tool_json = serde_json::to_value(tool).unwrap_or_default();
+                evaluate_conditions(&tool_json, conditions)
             }
             _ => false,
         }
