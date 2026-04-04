@@ -368,7 +368,30 @@ fn parse_predicate(pair: pest::iterators::Pair<Rule>) -> ParseResult<Predicate> 
 
 /// Parse condition list
 fn parse_condition_list(pair: pest::iterators::Pair<Rule>) -> ParseResult<Vec<Condition>> {
-    pair.into_inner().map(parse_condition).collect()
+    let mut conditions = Vec::new();
+    let mut pending_logical_op: Option<LogicalOp> = None;
+
+    for item in pair.into_inner() {
+        match item.as_rule() {
+            Rule::condition => {
+                let mut condition = parse_condition(item)?;
+                condition.logical_op = pending_logical_op.take();
+                conditions.push(condition);
+            }
+            Rule::logical_op => {
+                pending_logical_op = LogicalOp::from_str(item.as_str());
+            }
+            _ => {
+                // Try to parse AND/OR keywords directly
+                let s = item.as_str().to_uppercase();
+                if s == "AND" || s == "OR" {
+                    pending_logical_op = LogicalOp::from_str(&s);
+                }
+            }
+        }
+    }
+
+    Ok(conditions)
 }
 
 /// Parse a single condition
@@ -387,6 +410,7 @@ fn parse_condition(pair: pest::iterators::Pair<Rule>) -> ParseResult<Condition> 
         field,
         operator,
         value,
+        logical_op: None, // Will be set by parse_condition_list
     })
 }
 
@@ -917,6 +941,52 @@ mod tests {
         if let Statement::Recall(r) = stmt {
             assert_eq!(r.modifiers.min_confidence, Some(0.8));
             assert_eq!(r.modifiers.limit, Some(5));
+        } else {
+            panic!("Expected Recall statement");
+        }
+    }
+
+    #[test]
+    fn test_parse_or_conditions() {
+        // Test OR condition
+        let stmt = parse(r#"RECALL FROM WORKING WHERE status = "active" OR status = "pending""#).unwrap();
+        if let Statement::Recall(r) = stmt {
+            if let Predicate::Where { conditions } = r.predicate {
+                assert_eq!(conditions.len(), 2, "Should have 2 conditions");
+                assert_eq!(conditions[0].logical_op, None, "First condition has no preceding op");
+                assert_eq!(conditions[1].logical_op, Some(LogicalOp::Or), "Second condition should have OR");
+            } else {
+                panic!("Expected Where predicate");
+            }
+        } else {
+            panic!("Expected Recall statement");
+        }
+
+        // Test AND condition
+        let stmt = parse(r#"RECALL FROM WORKING WHERE status = "active" AND priority > 5"#).unwrap();
+        if let Statement::Recall(r) = stmt {
+            if let Predicate::Where { conditions } = r.predicate {
+                assert_eq!(conditions.len(), 2);
+                assert_eq!(conditions[0].logical_op, None);
+                assert_eq!(conditions[1].logical_op, Some(LogicalOp::And));
+            } else {
+                panic!("Expected Where predicate");
+            }
+        } else {
+            panic!("Expected Recall statement");
+        }
+
+        // Test mixed AND/OR
+        let stmt = parse(r#"RECALL FROM WORKING WHERE a = 1 AND b = 2 OR c = 3"#).unwrap();
+        if let Statement::Recall(r) = stmt {
+            if let Predicate::Where { conditions } = r.predicate {
+                assert_eq!(conditions.len(), 3);
+                assert_eq!(conditions[0].logical_op, None);
+                assert_eq!(conditions[1].logical_op, Some(LogicalOp::And));
+                assert_eq!(conditions[2].logical_op, Some(LogicalOp::Or));
+            } else {
+                panic!("Expected Where predicate");
+            }
         } else {
             panic!("Expected Recall statement");
         }

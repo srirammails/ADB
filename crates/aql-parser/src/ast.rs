@@ -214,6 +214,26 @@ pub enum Predicate {
     All,
 }
 
+/// Logical operators for combining conditions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LogicalOp {
+    #[default]
+    And,
+    Or,
+}
+
+impl LogicalOp {
+    /// Parse from string
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "AND" => Some(Self::And),
+            "OR" => Some(Self::Or),
+            _ => None,
+        }
+    }
+}
+
 /// A condition in WHERE clause
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Condition {
@@ -223,6 +243,9 @@ pub struct Condition {
     pub operator: Operator,
     /// Value to compare
     pub value: Value,
+    /// Logical operator preceding this condition (None for first condition)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_op: Option<LogicalOp>,
 }
 
 /// Comparison operators

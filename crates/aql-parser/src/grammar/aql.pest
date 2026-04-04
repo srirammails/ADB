@@ -141,9 +141,12 @@ all_pred = { ^"ALL" }
 // Conditions
 // ============================================================================
 
-condition_list = { condition ~ (^"AND" ~ condition)* }
+condition_list = { condition ~ (logical_op ~ condition)* }
 
 condition = { field_path ~ operator ~ value }
+
+// Logical operators for combining conditions
+logical_op = { ^"AND" | ^"OR" }
 
 operator = {
     ">=" | "<=" | "!=" | "<>" | "=" | ">" | "<"
